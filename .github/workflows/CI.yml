@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # One run per branch or pull request. A push that lands while the previous
+  # one is still going makes that one's answer stale, not worth waiting for.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/master' }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: julia ${{ matrix.version }} · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    continue-on-error: ${{ matrix.version == 'nightly' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+          - '1.10'      # the lower bound in Project.toml
+          - '1'         # the current release
+        os:
+          - ubuntu-latest
+          - macOS-latest
+          # No Windows until there is something for it to drive: `tmux_jll` has
+          # no build there and neither has tmux, so every testset that needs a
+          # server would skip and the row would be green for the wrong reason.
+          # psmux is what would change that.
+        include:
+          # One nightly, allowed to fail: it is a warning about the next release
+          # and not a reason to hold a pull request.
+          - version: 'nightly'
+            os: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Nothing to install: `tmux_jll` is a dependency and its binary is what
+      # `mux_bin` runs, `PATH` being deliberately not consulted. So every row
+      # here drives a real server, with the same build on both platforms.
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.version }}
+      - uses: julia-actions/cache@v2
+      - uses: julia-actions/julia-buildpkg@v1
+
+      # In the log, so a row that quietly stopped testing the server half is
+      # visible rather than merely green.
+      - name: Which tmux
+        run: julia --project=. -e 'using TermIFrame; println(something(mux_bin(), "none"))'
+
+      - uses: julia-actions/julia-runtest@v1
+
+      - uses: julia-actions/julia-processcoverage@v1
+        if: matrix.version == '1' && runner.os == 'Linux'
+      - uses: codecov/codecov-action@v4
+        if: matrix.version == '1' && runner.os == 'Linux'
+        with:
+          files: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false

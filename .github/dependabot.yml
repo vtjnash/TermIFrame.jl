@@ -1,0 +1,28 @@
+# Two ecosystems: the actions in `.github/workflows`, and this package's own
+# `[compat]` bounds in `Project.toml` - Dependabot grew a Julia ecosystem, so
+# CompatHelper is not needed for the second.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "ci"
+    groups:
+      # One pull request for the routine bumps rather than five: these move
+      # together and are reviewed together.
+      actions:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "julia"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "deps"
