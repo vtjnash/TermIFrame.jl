@@ -71,11 +71,18 @@ The border is drawn with Term's box characters, following
 `Term.TERM_THEME[].box` — so an iframe beside a `Term.Panel` is bordered the way
 that panel is, and changing the theme moves both.
 
-The measuring is this package's own, and deliberately so. `Panel` measures
-markup, and a captured screen is not markup: it is a child program's raw SGR and
-OSC 8 hyperlinks, which markup measurement counts as characters. Content that
-fits gets wrapped, and the panel then elides its own tail. So `awidth`, `afit`
-and `apad` work against real display widths, and Term supplies the glyphs.
+The measuring is not Term's, and deliberately so. `Panel` measures markup, and a
+captured screen is not markup: it is a child program's raw SGR and OSC 8
+hyperlinks, which markup measurement counts as characters. Content that fits
+gets wrapped, and the panel then elides its own tail. So `awidth`, `afit` and
+`apad` work against real display widths, and Term supplies the glyphs.
+
+Both halves come through [`TermInput.jl`](https://github.com/vtjnash/TermInput.jl),
+which is this package's only dependency besides `tmux_jll`: a text field needs
+exactly the same measuring for exactly the same reason, and the dependency goes
+that way round because a text field must not pull a tmux binary in to measure a
+string. `awidth`, `astrip`, `afit`, `apad`, `amid` and `awrap` are re-exported
+here, so a host laying an iframe out beside something else has them.
 
 ## Sessions
 

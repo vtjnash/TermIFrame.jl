@@ -162,66 +162,9 @@ end
     @test passthrough("\e[2J\e[H") == String[]
 end
 
-@testset "display width of what a child wrote" begin
-    @test awidth("plain") == 5
-    @test awidth("\e[32mgreen\e[0m") == 5
-    @test awidth("\e]8;;http://x\e\\link\e]8;;\e\\") == 4
-    @test astrip("\e[32mgreen\e[0m") == "green"
-    @test apad("ab", 5) == "ab   " && awidth(apad("ab", 5)) == 5
-    @test awidth(apad("\e[32mab\e[0m", 5)) == 5
-    # Truncation keeps the escapes it passed and closes the style at the cut.
-    @test awidth(afit("abcdefgh", 4)) == 4
-    @test endswith(afit("abcdefgh", 4), "…\e[0m")
-    @test afit("abc", 10) == "abc"
-    @test afit("abc", 0) == ""
-    @test awidth(afit("\e[32mabcdefgh\e[0m", 4)) == 4
-end
-
-@testset "a name too long for its column is told apart at the end" begin
-    # Names in a fixed column agree at the front and differ at the end far more
-    # often than the other way round - branches under one owner prefix, urls
-    # into one issue - so cutting at the tail draws a pair like that as the
-    # *same string*, and a list whose job is telling two of something apart then
-    # tells you nothing.
-    a = "users/someone/tsa-tryheld-state"
-    b = "users/someone/tsa-tryheld-other"
-    @test afit(a, 26) == afit(b, 26)              # what eliding at the tail does
-    @test amid(a, 26) != amid(b, 26)              # and what this does instead
-    @test awidth(amid(a, 26)) == 26
-    @test endswith(amid(a, 26), "state") && startswith(amid(a, 26), "users/")
-
-    # Short enough is left exactly as it was.
-    @test amid("patch-11", 26) == "patch-11"
-    @test amid("", 26) == ""
-    @test amid("anything", 0) == ""
-    # Never wider than asked, at any width worth drawing. Below three columns
-    # there is no room for a head, a mark and a tail, and the arithmetic that
-    # spends `w - 1` on each end would come back one column too wide.
-    for w in 1:40, s in (a, b, "x", "abcdefgh")
-        @test awidth(amid(s, w)) <= w
-    end
-    # A wide character is not split down the middle to make the count come out.
-    @test awidth(amid("日本語のブランチ名前です", 11)) <= 11
-end
-
-@testset "wrapping keeps the style across the break" begin
-    ok(s, w) = all(awidth(l) <= w for l in awrap(s, w))
-    same(s, w) = astrip(join(awrap(s, w), "")) == astrip(s)
-    @test awrap("guard the remaining raw stderr writes that gate cleanup", 40) ==
-          ["guard the remaining raw stderr writes ", "that gate cleanup"]
-    # A colour opened before a break is replayed after it, or it would stop
-    # there - and the escapes travel with the word they style.
-    for (s, w) in (("\e[32mgreen words that go on and on and on\e[0m", 12),
-                   ("plain \e[1mbold\e[0m and \e[31mred\e[0m again", 10))
-        @test ok(s, w) && same(s, w)
-    end
-    # A run wider than the pane has nowhere to break - a url, a type signature -
-    # so it is split rather than allowed to overflow.
-    long = awrap("a " * "x"^45, 20)
-    @test length(long) > 1 && ok("a " * "x"^45, 20)
-    # Degenerate widths do not loop or throw.
-    @test awrap("anything", 1) == ["anything"]
-end
+# The escape-aware measuring these draw against is `TermInput`'s now, and so is
+# its suite: `awidth`, `afit`, `apad`, `amid` and `awrap` are tested where they
+# live. What is below is this package's use of them.
 
 @testset "the box round it" begin
     # Every row exactly the width asked for, and exactly as many rows.

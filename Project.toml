@@ -3,12 +3,21 @@ uuid = "eb3a209b-12c7-484c-af99-a1186270a51f"
 authors = ["Jameson Nash <vtjnash@gmail.com>"]
 version = "0.1.0"
 
+# No `Term` here any more: nothing in this package names it. The box glyphs and
+# the theme arrive through `TermInput`, which is also where the measuring under
+# them went.
 [deps]
-Term = "22787eb5-b846-44ae-b979-8e399b8463ab"
+TermInput = "e53b28ee-00f8-475a-85b8-1918fdda0ee8"
 tmux_jll = "558ad2b7-f92e-50c4-8d35-b0432ac1efd4"
 
+# Until `TermInput` is registered. It is the measuring under the box drawn round
+# an embedded screen, and it is a package of its own because a text field needs
+# the same thing and must not pull a tmux binary in to get it.
+[sources]
+TermInput = {path = "../TermInput.jl"}
+
 [compat]
-Term = "2.1.1"
+TermInput = "0.1"
 tmux_jll = "3.5"
 julia = "1.10"
 

@@ -34,8 +34,6 @@ one prefix key - `^]` - which is the only key the child never gets.
 
 ## The pieces
 
-  * `ansi.jl`    display widths, fitting and wrapping for text this package
-                 did not write
   * `tmux.jl`    sessions: name one, start it, tag it, list them, attach
   * `control.jl` `tmux -C`, as a protocol and as a client
   * `border.jl`  the box, in Term's box characters and the theme's style
@@ -44,14 +42,20 @@ one prefix key - `^]` - which is the only key the child never gets.
 ## What Term gives it
 
 The border follows `Term.TERM_THEME[].box`, so an iframe beside a `Term.Panel`
-is bordered the way that panel is. The measuring is this package's own:
-`Panel` measures markup, and a captured screen is a child program's raw SGR and
-OSC 8, which markup measurement counts as characters - content that fits is
-wrapped, and the panel then elides its own tail.
+is bordered the way that panel is. The measuring is not Term's: `Panel` measures
+markup, and a captured screen is a child program's raw SGR and OSC 8, which
+markup measurement counts as characters - content that fits is wrapped, and the
+panel then elides its own tail. It comes from `TermInput` instead - `awidth`,
+`astrip`, `afit`, `apad`, `amid` and `awrap`, re-exported here - which is where
+it lives because a text field needs exactly the same thing and must not pull a
+tmux binary in to get it.
 """
 module TermIFrame
 
 import tmux_jll
+# The escape-aware measuring, which is `TermInput`'s and re-exported below: a
+# host laying an iframe out beside something else needs it as much as this does.
+using TermInput
 
 export ESCAPE, awidth, astrip, afit, apad, amid, awrap
 export mux_bin, mux_cmd, bundled_tmux, mux_name, mux, mux_alive, mux_start, mux_kill, mux_tag!,
@@ -66,7 +70,6 @@ export IFrame, iframe, iframe_box, iframe_origin, iframe_sync!, iframe_cursor,
        iframe_keys, iframe_wheel!, retarget_mouse,
        IFRAME_PREFIX, IFRAME_KEYS, WHEEL_ROWS
 
-include("ansi.jl")
 include("tmux.jl")
 include("control.jl")
 include("border.jl")

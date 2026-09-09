@@ -8,14 +8,16 @@
 # What does not come from Term is the *measuring*. `Panel` measures markup, and
 # a captured screen is not markup: it is a child program's raw SGR and OSC 8,
 # which `Panel` counts as characters. Content that fits is wrapped and the panel
-# then elides its own tail. So the rows are laid out here against real display
-# widths - see `ansi.jl` - and Term supplies the glyphs.
+# then elides its own tail. So the rows are laid out against real display widths
+# - `TermInput`'s `awidth`, `afit` and `apad`, which a text field needs for the
+# same reason - and Term supplies the glyphs.
 
-import Term
-import Term.Boxes: BOXES
+"""The box style to draw with, following Term's theme unless told otherwise.
 
-"""The box style to draw with, following Term's theme unless told otherwise."""
-iframe_box_style() = get(BOXES, Term.TERM_THEME[].box, BOXES.ROUNDED)
+`TermInput.boxstyle`, so that an iframe and a composer drawn on the same screen
+cannot disagree about which box the theme asked for.
+"""
+iframe_box_style() = boxstyle()
 
 """
     bordered(lines, w, h, title, focused; box) -> Vector{String}
