@@ -119,6 +119,39 @@ and to nobody else.
 | `IFRAME_PREFIX` | the prefix byte, `^]` |
 | `IFRAME_KEYS` | the bytes after it that are the package's, and a host must not shadow |
 
+## Windows
+
+`tmux_jll` has no build for Windows, so `mux_bin` returns `nothing` there and
+the session-backed tests skip rather than fail. Under WSL2 this does not come
+up at all: a real Linux tmux server runs underneath and everything above works
+exactly as it does on Linux or macOS, which is the supported way to run this on
+a Windows machine today.
+
+A native backend — no WSL2, no Linux tmux underneath — was looked at and set
+aside. `tmux` itself has no Windows build to bundle. A package calling itself
+`psmux` turned up in searches for an alternative and does not hold up: the repo
+carries an `llms.txt` and an `AGENTS.md` written to be read by coding agents
+rather than people, a false claim of automatic Claude Code integration, star
+and fork counts implausible for its age, and "independent" comparison posts
+from the same account that publishes it. Whatever the binary itself does, a
+project shaped to get an AI agent to install and vouch for it is not one this
+depends on.
+
+The other candidate was building on ConPTY directly. ConPTY has no server of
+its own — the pseudoconsole lives only as long as the process that created it,
+so "a session outlives every client that has looked at it" is not something the
+platform gives you; it is something tmux's server provides on top, and would
+have to be built again from nothing to get the same property on Windows.
+[WezTerm](https://github.com/wezterm/wezterm) has already built that once, and
+`wezterm-mux-server --daemonize` really does run detached from any GUI. But
+tried by hand: panes spawned into it while no client was attached — the case
+this package needs, a session nobody is looking at right now — were torn down
+by the server within a second, `get-text` included, every time except the very
+first. Its CLI is also a process-per-command interface with no raw-byte send
+and no push notifications, the opposite of the persistent, hex-keyed, control
+mode connection `control.jl` is built around. Native Windows support stays
+undone until there is a backend that actually holds a session open unattended.
+
 ## Tests
 
 ```bash
