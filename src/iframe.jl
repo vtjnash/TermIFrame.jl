@@ -229,7 +229,7 @@ function iframe_rows(f::IFrame, w::Int, h::Int; focused::Bool = true,
     body = bordered(f.frame, w, h - 1, f.title, focused)
     n = note === nothing ? iframe_note(f) : note
     n === nothing && (n = string(f.name, " · ^]q leave it running · ^]? keys"))
-    rows = vcat(body, [string("\e[2m", afit(String(n), w), "\e[0m")])
+    rows = vcat(body, [string(CHROME[].quiet, afit(String(n), w), CHROME[].reset)])
     while length(rows) < h
         push!(rows, "")
     end

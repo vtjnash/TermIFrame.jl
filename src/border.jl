@@ -20,7 +20,7 @@ cannot disagree about which box the theme asked for.
 iframe_box_style() = boxstyle()
 
 """
-    bordered(lines, w, h, title, focused; box) -> Vector{String}
+    bordered(lines, w, h, title, focused; box, chrome) -> Vector{String}
 
 Draw one bordered box, every row exactly `w` display columns and exactly `h`
 rows of them. `lines` are the contents, already ANSI; anything past `h - 2` of
@@ -30,9 +30,13 @@ them is dropped and anything short is blank.
 on screen has to be able to say without spending a row on it.
 """
 function bordered(lines::Vector{String}, w::Int, h::Int, title::AbstractString,
-                  focused::Bool; box = iframe_box_style())
-    bw = focused ? "\e[1m" : "\e[2m"
-    R = "\e[0m"
+                  focused::Bool; box = iframe_box_style(), chrome = CHROME[])
+    # Which of the two weights a border is drawn in *is* the answer to "where
+    # do my keys go", so it is the one thing here that is not decoration. The
+    # weights themselves are the host's - `TermInput.CHROME`, which is also
+    # where the widgets on the other side of this split get theirs.
+    bw = focused ? chrome.strong : chrome.quiet
+    R = chrome.reset
     inner = w - 4
     t = afit(String(title), max(0, inner - 4))
     tl, tm, tr = box.top.left, box.top.mid, box.top.right
