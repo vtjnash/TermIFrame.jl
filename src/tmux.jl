@@ -64,6 +64,17 @@ function mux_bin()
 end
 
 """
+    no_mux() -> String
+
+The status line for [`mux_bin`](@ref) answering `nothing`, saying where it did
+look - which is not `PATH`. Exported so a host that guards its own keystroke
+paths on `mux_bin()` says the same thing this does.
+"""
+no_mux() = isempty(get(ENV, MUX_ENV[], "")) ?
+    "no tmux: tmux_jll has no build for this platform and \$$(MUX_ENV[]) is unset" :
+    "no tmux: \$$(MUX_ENV[]) names no file"
+
+"""
     mux_cmd(args...) -> Cmd | Nothing
 
 The command that runs the multiplexer with `args` appended, or `nothing` when
@@ -130,7 +141,7 @@ dead server has to become a status line, not a backtrace.
 """
 function mux(args::AbstractString...)
     cmd = mux_cmd(args...)
-    cmd === nothing && return (false, "no tmux on PATH")
+    cmd === nothing && return (false, no_mux())
     try
         out = read(pipeline(cmd; stderr = devnull), String)
         (true, out)

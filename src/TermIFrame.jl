@@ -58,7 +58,7 @@ import tmux_jll
 using TermInput
 
 export ESCAPE, awidth, astrip, afit, apad, amid, awrap
-export mux_bin, mux_cmd, bundled_tmux, mux_name, mux, mux_alive, mux_start, mux_kill, mux_tag!,
+export mux_bin, mux_cmd, bundled_tmux, no_mux, mux_name, mux, mux_alive, mux_start, mux_kill, mux_tag!,
        mux_rename, mux_sessions, mux_list, mux_attach, standalone,
        MUX_PREFIX, MUX_ENV, SCRUB_PREFIXES
 export MuxProto, mux_feed!, mux_unescape, passthrough
