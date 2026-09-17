@@ -146,7 +146,10 @@ function iframe_sync!(f::IFrame, cols::Integer, rows::Integer)
     end
     lines = mux_capture(f.client; scroll = f.scroll, rows = last(f.sized))
     if f.client.dead
-        f.status = "session ended"
+        # With the reason: a client that timed out on a reply is not a session
+        # that ended, and the two want different things done about them.
+        f.status = isempty(f.client.why) ? "session ended" :
+                   string("session ended: ", f.client.why)
         f.client = nothing
         # Once, and never from a later sync: an editor's file is read back when
         # it exits, and reading it twice would undo an edit made in between.

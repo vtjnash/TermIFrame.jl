@@ -154,6 +154,17 @@ mutable struct MuxClient
     onoutput::Any
     reader::Union{Task,Nothing}
     dead::Bool
+    why::String                 # what killed it, for the status line: a
+                                # client that is dead with no reason on it
+                                # was read as the server having gone away,
+                                # when it was a reply five seconds late
+end
+
+"Mark the client dead, with the first reason kept."
+function mux_dead!(c::MuxClient, why::AbstractString)
+    c.dead || (c.why = String(why))
+    c.dead = true
+    nothing
 end
 
 """
@@ -174,7 +185,8 @@ function mux_open(name::AbstractString; onoutput = nothing)
     catch
         return nothing
     end
-    c = MuxClient(String(name), proc, MuxProto(), Channel{Any}(Inf), onoutput, nothing, false)
+    c = MuxClient(String(name), proc, MuxProto(), Channel{Any}(Inf), onoutput, nothing,
+                  false, "")
     c.reader = @async begin
         try
             for line in eachline(proc.out)
@@ -184,12 +196,16 @@ function mux_open(name::AbstractString; onoutput = nothing)
                 elseif kind === :output
                     c.onoutput === nothing || c.onoutput(a, b)
                 elseif kind === :notice && a == "exit"
+                    mux_dead!(c, isempty(b) ? "the server said exit" :
+                                 string("the server said exit: ", b))
                     break
                 end
             end
-        catch
+            mux_dead!(c, "the control client closed its end")
+        catch e
+            mux_dead!(c, string("reading the control client: ",
+                                first(sprint(showerror, e), 80)))
         finally
-            c.dead = true
             isopen(c.replies) && put!(c.replies, (false, ["client closed"]))
         end
     end
@@ -219,7 +235,7 @@ function mux_sync!(c::MuxClient; timeout::Real = 5.0)
         write(c.proc.in, "display-message -p ", tok, "\n")
         flush(c.proc.in)
     catch
-        c.dead = true
+        mux_dead!(c, "could not write to the control client")
         return false
     end
     deadline = time() + timeout
@@ -237,7 +253,7 @@ function mux_sync!(c::MuxClient; timeout::Real = 5.0)
             return true
         end
     end
-    c.dead = true
+    mux_dead!(c, "the attach did not answer in $(timeout)s")
     false
 end
 
@@ -257,14 +273,14 @@ function mux_ask(c::MuxClient, cmd::AbstractString; timeout::Real = 5.0)
         write(c.proc.in, cmd, '\n')
         flush(c.proc.in)
     catch
-        c.dead = true
+        mux_dead!(c, "could not write to the control client")
         return (false, ["client closed"])
     end
     late = Timer(_ -> (isopen(c.replies) && put!(c.replies, :timeout)), timeout)
     try
         r = take!(c.replies)
         if r === :timeout
-            c.dead = true
+            mux_dead!(c, string("no reply in $(timeout)s to ", first(split(cmd, ' '))))
             return (false, ["timed out"])
         end
         return r
@@ -378,7 +394,7 @@ Let go of the client. The session it was attached to keeps running, which is the
 whole point of there being a session.
 """
 function mux_close(c::MuxClient)
-    c.dead = true
+    mux_dead!(c, "closed")
     try; close(c.proc.in); catch; end
     try; kill(c.proc); catch; end
     nothing
