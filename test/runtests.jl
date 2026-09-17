@@ -98,6 +98,14 @@ end
         @test endswith(s, " bash")
         # And a host that wants to inherit everything says so.
         @test standalone("bash"; scrub = String[]) == "bash"
+        # What it is handed instead: quoted for the shell tmux runs it
+        # through, so a value is a value and never a word to expand.
+        s = standalone("bash"; scrub = String[],
+                       set = ["SSH_AUTH_SOCK" => "/run/a.sock", "X" => "it's \$HOME"])
+        @test s == "env SSH_AUTH_SOCK='/run/a.sock' X='it'\\''s \$HOME' bash"
+        # Scrubbed and set together, the unsets first.
+        s = standalone("bash"; set = ["A" => "1"])
+        @test occursin("-u CLAUDE_CODE_TOKEN ", s) && endswith(s, " A='1' bash")
     end
 end
 

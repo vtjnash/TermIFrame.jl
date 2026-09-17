@@ -161,20 +161,23 @@ for one thing would otherwise answer for another whose name extends it.
 mux_alive(name::AbstractString) = first(mux("has-session", "-t=" * name))
 
 """
-    mux_start(name, dir, cmd; scrub = SCRUB_PREFIXES[]) -> (ok, err)
+    mux_start(name, dir, cmd; scrub = SCRUB_PREFIXES[], set = []) -> (ok, err)
 
 Start a detached session running `cmd` in `dir`, unless it is already up.
 
 Detached is what makes this reusable: the session exists whether or not anyone
 is looking at it, so attaching is a separate decision made later, possibly
 several times.
+
+`scrub` and `set` are [`standalone`](@ref)'s: what the program is not to
+inherit, and what it is to be handed instead.
 """
 function mux_start(name::AbstractString, dir::AbstractString, cmd::AbstractString;
-                   scrub = SCRUB_PREFIXES[])
+                   scrub = SCRUB_PREFIXES[], set = Pair{String,String}[])
     mux_alive(name) && return (true, "")
     # One trailing argument, so tmux hands the whole thing to a shell. Passing
     # it pre-split would make the caller quote for a shell it cannot see.
-    ok, err = mux("new-session", "-d", "-s", name, "-c", dir, standalone(cmd; scrub))
+    ok, err = mux("new-session", "-d", "-s", name, "-c", dir, standalone(cmd; scrub, set))
     ok ? (true, "") : (false, isempty(err) ? "could not start session" : err)
 end
 
@@ -193,7 +196,7 @@ Set to `String[]` to inherit everything.
 const SCRUB_PREFIXES = Ref(["CLAUDE"])
 
 """
-    standalone(cmd; scrub) -> String
+    standalone(cmd; scrub, set) -> String
 
 Wrap `cmd` so its child starts as if from a plain terminal.
 
@@ -202,13 +205,30 @@ version inherits is scrubbed too, and nothing is scrubbed that was not actually
 there. `env -u` does it at exec, which is the only place that certainly
 applies: the tmux *server* keeps the environment it was started with, and every
 session it is asked for later would otherwise be handed a copy.
+
+`set` is the other direction, `name => value` pairs the child is to start
+with, whatever the server holds. The same `env` does both, and for the same
+reason: the server's copy of the environment is the one thing a session
+command cannot change, and a variable set on the *session* reaches only what
+is started in it afterwards, never the program already running. The values
+are single-quoted for the shell tmux runs the command through, so they are
+handed over as they are, not expanded - a host that wants `\$PATH` in one has
+to put the actual path there.
 """
-function standalone(cmd::AbstractString; scrub = SCRUB_PREFIXES[])
-    isempty(scrub) && return String(cmd)
-    vars = sort!([k for k in keys(ENV) if any(p -> startswith(k, p), scrub)])
-    isempty(vars) && return String(cmd)
-    string("env ", join(("-u " * v for v in vars), ' '), ' ', cmd)
+function standalone(cmd::AbstractString; scrub = SCRUB_PREFIXES[],
+                    set = Pair{String,String}[])
+    vars = isempty(scrub) ? String[] :
+           sort!([k for k in keys(ENV) if any(p -> startswith(k, p), scrub)])
+    isempty(vars) && isempty(set) && return String(cmd)
+    words = ["env"]
+    append!(words, ("-u " * v for v in vars))
+    append!(words, (string(k, "=", shq(v)) for (k, v) in set))
+    push!(words, String(cmd))
+    join(words, ' ')
 end
+
+"""Single-quote a shell word, the one quoting every shell reads the same way."""
+shq(s::AbstractString) = string("'", replace(String(s), "'" => "'\\''"), "'")
 
 """
     mux_kill(name) -> Bool
