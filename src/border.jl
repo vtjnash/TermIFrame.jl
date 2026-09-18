@@ -20,7 +20,7 @@ cannot disagree about which box the theme asked for.
 iframe_box_style() = boxstyle()
 
 """
-    bordered(lines, w, h, title, focused; box, chrome) -> Vector{String}
+    bordered(lines, w, h, title, focused; box, chrome, gutter) -> Vector{String}
 
 Draw one bordered box, every row exactly `w` display columns and exactly `h`
 rows of them. `lines` are the contents, already ANSI; anything past `h - 2` of
@@ -28,9 +28,18 @@ them is dropped and anything short is blank.
 
 `focused` is bold against dim, which is the one thing a host with several boxes
 on screen has to be able to say without spending a row on it.
+
+`gutter` is a mark per line, drawn *over* the left border and its pad - two
+columns - on the rows that have one; an empty string, or none, is the border
+as usual. It is for a mark about a row rather than in it: a comment hanging off
+a line of a diff is the case, and at the end of the row it was after the text,
+where the eye is not, while a mark standing in the frame is where a margin note
+goes. Padded to the two columns, and one wider than that is not drawn at all:
+two columns cut is an ellipsis, which says nothing.
 """
 function bordered(lines::Vector{String}, w::Int, h::Int, title::AbstractString,
-                  focused::Bool; box = iframe_box_style(), chrome = CHROME[])
+                  focused::Bool; box = iframe_box_style(), chrome = CHROME[],
+                  gutter::AbstractVector{<:AbstractString} = String[])
     # Which of the two weights a border is drawn in *is* the answer to "where
     # do my keys go", so it is the one thing here that is not decoration. The
     # weights themselves are the host's - `TermInput.CHROME`, which is also
@@ -48,7 +57,10 @@ function bordered(lines::Vector{String}, w::Int, h::Int, title::AbstractString,
     out = [string(bw, tl, tm, " ", R, bw, t, R, bw, " ", bar, tr, R)]
     for i in 1:(h - 2)
         c = i <= length(lines) ? lines[i] : ""
-        push!(out, string(bw, ml, R, " ", apad(afit(c, inner), inner), " ", bw, mr, R))
+        g = i <= length(gutter) ? gutter[i] : ""
+        left = (isempty(g) || awidth(g) > 2) ? string(bw, ml, R, " ") :
+               string(apad(g, 2), R)
+        push!(out, string(left, apad(afit(c, inner), inner), " ", bw, mr, R))
     end
     push!(out, string(bw, bl, string(bm)^max(0, w - 2), br, R))
     out

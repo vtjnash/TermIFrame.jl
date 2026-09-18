@@ -191,6 +191,16 @@ end
     # And the box characters are Term's, which is what makes this a plugin
     # rather than a wrapper: the theme's box is what a `Term.Panel` uses.
     @test occursin(string(TermIFrame.iframe_box_style().top.left), astrip(rs[1]))
+    # A gutter mark stands in the left border and its pad, on its row alone;
+    # the rows keep their width, and a mark too wide for the two columns is
+    # left off rather than cut to an ellipsis.
+    ml = string(TermIFrame.iframe_box_style().mid.left)
+    rs = bordered(["one", "two", "three"], 20, 5, "g", true;
+                  gutter = ["", "\e[36m💬\e[0m", "wide!"])
+    @test all(awidth(r) == 20 for r in rs)
+    @test startswith(astrip(rs[2]), ml * " one")
+    @test startswith(astrip(rs[3]), "💬two")
+    @test startswith(astrip(rs[4]), ml * " three")
 end
 
 @testset "the box the child is given" begin
