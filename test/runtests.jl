@@ -262,6 +262,15 @@ else
         @test mux_tag!(n; worktree = pwd(), kind = :shell, item = "demo#1")
         r = only(filter(x -> x.name == n, mux_list()))
         @test r.worktree == pwd() && r.kind == "shell" && r.item == "demo#1"
+        # The fields of a row are `MUX_TAGS`, set once by the host; a tag
+        # never set reads back empty rather than missing.
+        @test !hasproperty(r, :url)
+        MUX_TAGS[] = (:worktree, :kind, :item, :url)
+        r = only(filter(x -> x.name == n, mux_list()))
+        @test r.url == ""
+        @test mux_tag!(n; url = "https://example.com/1")
+        @test only(filter(x -> x.name == n, mux_list())).url == "https://example.com/1"
+        MUX_TAGS[] = (:worktree, :kind, :item)
         # An open iframe *is* an attached client, which is what `attached`
         # reports - a host drawing a session and a person looking at it full
         # screen are the same thing to tmux.
@@ -276,9 +285,12 @@ else
         # `bell` is the server's own seen bit, and attaching is what reads it.
         row() = only(filter(x -> x.name == n, mux_list()))
         @test row().attached === false && row().bell === false
-        ok, tty = mux("display", "-p", "-t", n, "#{pane_tty}")
-        @test ok
-        ring() = (open(io -> write(io, '\a'), strip(tty), "w"); sleep(0.2))
+        ring() = (@test mux_ring!(n); sleep(0.2))
+        ring()
+        @test row().bell === true
+        # A host's own read mark clears it without anyone attaching for long.
+        @test mux_seen!(n)
+        @test row().bell === false && row().attached === false
         ring()
         @test row().bell === true
 

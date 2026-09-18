@@ -131,6 +131,14 @@ program's to list or to kill. Set it once, to something short and yours.
 """
 const MUX_PREFIX = Ref("iframe")
 
+"""The tags [`mux_list`](@ref) reads back when it is not told which.
+
+A host tags its sessions with what they are to it, and lists them from more
+places than it wants to spell the list out in - so it is set once, beside
+[`MUX_PREFIX`](@ref), and every listing agrees on the fields of a row.
+"""
+const MUX_TAGS = Ref{Tuple{Vararg{Symbol}}}((:worktree, :kind, :item))
+
 """
     mux(args...) -> (ok, output)
 
@@ -286,9 +294,10 @@ Every session this program owns, with what is running in each.
 One call, and only the active pane of each session: the list is a summary, and a
 session with three windows is still one line of it.
 
-`tags` names the user options set by [`mux_tag!`](@ref) to read back; each
-becomes a field of the row, alongside `name`, `command`, `attached` and `bell`.
-Rows come back sorted by name.
+`tags` names the user options set by [`mux_tag!`](@ref) to read back -
+[`MUX_TAGS`](@ref) unless said otherwise; each becomes a field of the row,
+alongside `name`, `command`, `attached` and `bell`. Rows come back sorted by
+name.
 
 `bell` is tmux's own unread mark: the child rang the terminal bell while nobody
 was attached, and nobody has attached since. Measured on 3.5a rather than read
@@ -298,14 +307,14 @@ it - a control-mode attach the same as any other. That is exactly a seen bit,
 kept by the server the session lives in, so a child that rings when it wants
 attention - a hook on the end of an agent's turn - is a child whose rows can
 say so without a listener of its own. `monitor-bell` is on by default and is
-the user's to turn off.
+the user's to turn off. [`mux_seen!`](@ref) clears it and [`mux_ring!`](@ref)
+sets it, for a host whose own marks have to agree with it.
 
 The tags are matched here rather than with a tmux filter expression: a path can
 contain the characters a format string is made of, and a comma in a checkout's
 name would otherwise quietly match nothing.
 """
-function mux_list(; tags = (:worktree, :kind, :item),
-                  prefix::AbstractString = MUX_PREFIX[])
+function mux_list(; tags = MUX_TAGS[], prefix::AbstractString = MUX_PREFIX[])
     tags = Tuple(Symbol(t) for t in tags)
     fmt = join(vcat(["#{session_name}", "#{pane_current_command}", "#{session_attached}",
                      "#{window_bell_flag}"],
@@ -326,6 +335,42 @@ function mux_list(; tags = (:worktree, :kind, :item),
     end
     sort!(rows; by = r -> r.name)
     rows
+end
+
+"""
+    mux_seen!(name) -> Bool
+
+Clear the session's bell flag, as looking at it would.
+
+Nothing but an attach clears the flag - `select-window` returns early on the
+window that is already current, and there is no command for the flag itself -
+so this is one: a control-mode client on a closed stdin, which the server
+counts as somebody looking and which is gone on the next read (4 ms on 3.5a).
+For a host whose read mark and tmux's have to say the same thing: a mark that
+left the bell standing would leave the row unread whatever was pressed.
+"""
+mux_seen!(name::AbstractString) = first(mux("-C", "attach", "-t=" * String(name)))
+
+"""
+    mux_ring!(name) -> Bool
+
+Ring the session's bell, as its child would: a `BEL` on the pane's tty.
+
+The other half of [`mux_seen!`](@ref), for undoing it. Written to the tty and
+not sent as keys: `send-keys` is input to the child, and this is output from
+it. The flag is set only if nobody is attached, which is the rule for any bell.
+"""
+function mux_ring!(name::AbstractString)
+    # `-t name`, not `-t=name`: `display-message` takes `=name` without a
+    # word and prints an empty line for it. `mux_name` has no `=` to collide.
+    ok, tty = mux("display", "-p", "-t", String(name), "#{pane_tty}")
+    (ok && !isempty(strip(tty))) || return false
+    try
+        open(io -> write(io, '\a'), strip(tty), "w")
+        true
+    catch
+        false
+    end
 end
 
 """
