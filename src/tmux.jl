@@ -287,8 +287,18 @@ One call, and only the active pane of each session: the list is a summary, and a
 session with three windows is still one line of it.
 
 `tags` names the user options set by [`mux_tag!`](@ref) to read back; each
-becomes a field of the row, alongside `name`, `command` and `attached`. Rows
-come back sorted by name.
+becomes a field of the row, alongside `name`, `command`, `attached` and `bell`.
+Rows come back sorted by name.
+
+`bell` is tmux's own unread mark: the child rang the terminal bell while nobody
+was attached, and nobody has attached since. Measured on 3.5a rather than read
+off the manual: a bell with a client attached sets nothing, since somebody was
+looking; one rung into a detached session sets the flag; the next attach clears
+it - a control-mode attach the same as any other. That is exactly a seen bit,
+kept by the server the session lives in, so a child that rings when it wants
+attention - a hook on the end of an agent's turn - is a child whose rows can
+say so without a listener of its own. `monitor-bell` is on by default and is
+the user's to turn off.
 
 The tags are matched here rather than with a tmux filter expression: a path can
 contain the characters a format string is made of, and a comma in a checkout's
@@ -297,21 +307,22 @@ name would otherwise quietly match nothing.
 function mux_list(; tags = (:worktree, :kind, :item),
                   prefix::AbstractString = MUX_PREFIX[])
     tags = Tuple(Symbol(t) for t in tags)
-    fmt = join(vcat(["#{session_name}", "#{pane_current_command}", "#{session_attached}"],
+    fmt = join(vcat(["#{session_name}", "#{pane_current_command}", "#{session_attached}",
+                     "#{window_bell_flag}"],
                     ["#{@$t}" for t in tags]), '\t')
     ok, out = mux("list-panes", "-a",
                   "-f", "#{&&:#{window_active},#{pane_active}}", "-F", fmt)
     ok || return NamedTuple[]
-    n = 3 + length(tags)
+    n = 4 + length(tags)
     p = string(prefix, "-")
     rows = NamedTuple[]
     for line in split(out, '\n'; keepempty = false)
         f = split(line, '\t')
         length(f) == n || continue
         startswith(f[1], p) || continue
-        vals = (; (t => String(f[3 + i]) for (i, t) in enumerate(tags))...)
+        vals = (; (t => String(f[4 + i]) for (i, t) in enumerate(tags))...)
         push!(rows, merge((name = String(f[1]), command = String(f[2]),
-                           attached = f[3] != "0"), vals))
+                           attached = f[3] != "0", bell = f[4] == "1"), vals))
     end
     sort!(rows; by = r -> r.name)
     rows

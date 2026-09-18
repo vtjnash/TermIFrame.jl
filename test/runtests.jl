@@ -272,9 +272,23 @@ else
         @test iframe_input!(f, [IFRAME_PREFIX, UInt8('q')], (3, 2), (cols2, rows2)) === :pop
         @test mux_alive(n) === true
 
+        # A bell rung with nobody attached is kept by tmux until somebody is:
+        # `bell` is the server's own seen bit, and attaching is what reads it.
+        row() = only(filter(x -> x.name == n, mux_list()))
+        @test row().attached === false && row().bell === false
+        ok, tty = mux("display", "-p", "-t", n, "#{pane_tty}")
+        @test ok
+        ring() = (open(io -> write(io, '\a'), strip(tty), "w"); sleep(0.2))
+        ring()
+        @test row().bell === true
+
         # `^]K` is the one that ends it.
         f2 = iframe(n, "demo")
         @test f2 !== nothing
+        @test row().attached === true && row().bell === false
+        # And with a client looking, a bell marks nothing: it was seen.
+        ring()
+        @test row().bell === false
         @test iframe_input!(f2, [IFRAME_PREFIX, UInt8('K')], (3, 2), (cols2, rows2)) === :pop
         @test mux_alive(n) === false
     end
