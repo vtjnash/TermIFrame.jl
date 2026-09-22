@@ -90,9 +90,14 @@ function iframe(name::AbstractString, title::AbstractString;
     # writing a frame. That is safe for exactly the reason only OSC 52 is
     # relayed: the sequence paints nothing and moves no cursor, so wherever it
     # arrives in the stream it changes nothing about what the frame draws.
-    c = mux_open(name; onoutput = (_, bytes) -> begin
+    #
+    # One carry per pane: an `%output` line is a cut of one pane's stream, and
+    # a clipboard longer than the cut finishes on a later line - see
+    # `passthrough`.
+    carry = Dict{String,Base.RefValue{String}}()
+    c = mux_open(name; onoutput = (pane, bytes) -> begin
         try
-            for seq in passthrough(bytes)
+            for seq in passthrough(get!(() -> Ref(""), carry, pane), bytes)
                 print(seq)
             end
         catch

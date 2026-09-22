@@ -162,8 +162,35 @@ end
     @test passthrough("\e]52;c;YQ==\a-\e]52;c;Yg==\a") ==
           ["\e]52;c;YQ==\a", "\e]52;c;Yg==\a"]
     # A truncated one is left for the rest of it to arrive next time, rather
-    # than being sent on half-written.
+    # than being sent on half-written - and with a carry, it does: tmux cuts a
+    # pane's stream into `%output` lines of a few kilobytes wherever it happens
+    # to be, and a clipboard of a few paragraphs is past the first cut. Before
+    # the carry a long copy was lost whole.
     @test passthrough("\e]52;c;aGk=") == String[]
+    carry = Ref("")
+    long = "\e]52;c;" * "QUJD"^600 * "\a"
+    @test passthrough(carry, long[1:1000]) == String[]
+    @test passthrough(carry, long[1001:end]) == [long]
+    @test carry[] == ""
+    # Cut inside the introducer, and inside the ST terminator.
+    @test passthrough(carry, "x\e]5") == String[]
+    @test passthrough(carry, "2;c;aGk=\ay") == ["\e]52;c;aGk=\a"]
+    @test passthrough(carry, "\e]52;c;aGk=\e") == String[]
+    @test passthrough(carry, "\\y") == ["\e]52;c;aGk=\e\\"]
+    # A line ending in an escape that turns out to be something else is let go.
+    @test passthrough(carry, "\e[2J\e") == String[]
+    @test passthrough(carry, "[H") == String[]
+    @test carry[] == ""
+    # What claude writes inside tmux: the copy raw and again inside a DCS
+    # passthrough with its escapes doubled, and a cut through each. Both come
+    # out whole, and the doubled escape is not part of either.
+    stream = long * "\ePtmux;\e" * replace(long, "\e" => "\e\e") * "\e\\"
+    @test vcat(passthrough(carry, stream[1:800]),
+               passthrough(carry, stream[801:3000]),
+               passthrough(carry, stream[3001:end])) == [long, long]
+    # Bytes need not be UTF-8.
+    @test passthrough(carry, String(UInt8[0xff, 0x1b])) == String[]
+    @test passthrough(carry, String(UInt8[0xfe])) == String[]
     # And nothing else is relayed: echoing anything that draws would be writing
     # over a screen the host lays out itself.
     @test passthrough("\e]0;a title\a") == String[]

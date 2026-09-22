@@ -68,6 +68,7 @@ end
 
 """
     passthrough(bytes) -> Vector{String}
+    passthrough(carry, bytes) -> Vector{String}
 
 What the child wrote that the screen cannot carry, to be sent on unchanged.
 
@@ -85,25 +86,57 @@ out itself - cursor moves, colours and clears would land wherever the child
 thought it was. A title or a bell would be defensible additions; anything that
 draws is not.
 
+**A sequence is not one `%output` line.** tmux cuts the stream into lines of
+a few kilobytes at whatever byte it reaches, and a clipboard is base64 of
+whatever was copied - a few paragraphs is past the first cut. So `carry` is
+the unfinished tail of the last line, and the next line is read as its
+continuation; a sequence is relayed once its terminator has arrived, and never
+half-written. The one-argument form is a fresh carry, which is what the tests
+want and what a single line gets. The carry is not bounded: a child that
+stops mid-sequence stops, and what it wrote is all there is to hold.
+
 Returns the sequences found, in order, with their terminators intact.
 """
-function passthrough(bytes::AbstractString)
-    isempty(bytes) && return String[]
+passthrough(bytes::AbstractString) = passthrough(Ref(""), bytes)
+
+const OSC52 = "\e]52;"
+
+function passthrough(carry::Ref{String}, bytes::AbstractString)
+    s = isempty(carry[]) ? String(bytes) : carry[] * bytes
+    carry[] = ""
+    isempty(s) && return String[]
     out = String[]
-    i = firstindex(bytes)
-    n = lastindex(bytes)
+    i = firstindex(s)
+    n = lastindex(s)
     while true
-        j = findnext("\e]52;", bytes, i)
-        j === nothing && break
+        j = findnext(OSC52, s, i)
+        if j === nothing
+            # The line may end inside the introducer itself: `\e]5` and then
+            # `2;...` on the next one. Keep what could still become it - the
+            # longest tail that is a prefix of it, as bytes, since the pane's
+            # stream owes nobody valid UTF-8.
+            for t in (ncodeunits(OSC52) - 1):-1:1
+                ncodeunits(s) - t + 1 >= i || continue
+                if endswith(s, SubString(OSC52, 1, t))
+                    carry[] = OSC52[1:t]
+                    break
+                end
+            end
+            break
+        end
         k = first(j)
         # OSC ends at BEL or at ST (ESC backslash), whichever comes first.
-        b = findnext('\a', bytes, k)
-        st = findnext("\e\\", bytes, k)
+        b = findnext('\a', s, k)
+        st = findnext("\e\\", s, k)
         stop = b === nothing ? (st === nothing ? nothing : last(st)) :
                st === nothing ? b : min(b, last(st))
-        stop === nothing && break        # truncated; the rest may arrive next time
-        push!(out, String(SubString(bytes, k, stop)))
-        i = nextind(bytes, stop)
+        if stop === nothing
+            # Truncated: the rest arrives on a later line, or never does.
+            carry[] = String(SubString(s, k))
+            break
+        end
+        push!(out, String(SubString(s, k, stop)))
+        i = nextind(s, stop)
         i > n && break
     end
     out
