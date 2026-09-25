@@ -50,6 +50,11 @@ mutable struct IFrame
     history::Int                   # how many rows there are to go back into
     alt::Bool                      # the child is on the alternate screen, where
                                    # scrolling back shows only its own redraws
+    pasting::Bool                  # inside a bracketed paste, its end not seen
+    brackets::Union{Nothing,Bool}  # the child wants the paste's markers, or
+                                   # the server could not say and it is held
+    paste::Vector{UInt8}           # the paste so far
+    held::Vector{UInt8}            # the start of a marker a read cut through
     onend::Any
     suspend::Any
     onerror::Any
@@ -66,7 +71,8 @@ box, the footer, which keys are whose - answers the same way either way.
 """
 IFrame(name::AbstractString, title::AbstractString = "") =
     IFrame(String(name), String(title), nothing, String[], (0, 0), "", false,
-           (0, 0, false), false, 0, 0, false, nothing, g -> g(), nothing)
+           (0, 0, false), false, 0, 0, false, false, nothing, UInt8[], UInt8[],
+           nothing, g -> g(), nothing)
 
 """
     iframe(name, title; onwake, onend, suspend, onerror) -> IFrame | Nothing
@@ -108,7 +114,8 @@ function iframe(name::AbstractString, title::AbstractString;
     end)
     c === nothing && return nothing
     IFrame(String(name), String(title), c, String[], (0, 0), "", false,
-           (0, 0, false), false, 0, 0, false, onend, suspend, onerror)
+           (0, 0, false), false, 0, 0, false, false, nothing, UInt8[], UInt8[],
+           onend, suspend, onerror)
 end
 
 """
@@ -409,6 +416,27 @@ function retarget_mouse(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
     out
 end
 
+const PASTE_START = b"\e[200~"
+const PASTE_END = b"\e[201~"
+
+"""How many bytes at the end of `bytes` are the start of `marker` - a read cut
+through it - counting only a start at least `least` long."""
+function cut_marker(bytes::AbstractVector{UInt8}, marker::AbstractVector{UInt8}, least::Int)
+    for k in min(length(marker) - 1, length(bytes)):-1:least
+        view(bytes, length(bytes)-k+1:length(bytes)) == view(marker, 1:k) && return k
+    end
+    0
+end
+
+"""Typing snaps back to the live screen, the way every terminal does - what
+you type is going to the bottom of it, so that is where you want to be
+looking."""
+function live!(f::IFrame, box::NTuple{2,Int})
+    f.scroll == 0 && return
+    f.scroll = 0
+    iframe_sync!(f, box...)
+end
+
 """
     iframe_input!(f, bytes, origin, box; oncommand) -> :ok | :pop
 
@@ -421,9 +449,69 @@ something not yet written.
 
 The prefix is the one byte held back rather than forwarded, and it is tracked
 across bursts: it can arrive alone, or ahead of its key in the same read.
+
+**A bracketed paste is text, not keys.** A host that turns bracketed paste on
+for its own sake - so that a paste is never read as its commands - hands the
+markers on here with the rest, and whether *this* child wanted them is the
+child's business. It is asked once, as the paste starts
+([`mux_brackets`](@ref)): the paste then streams through as it arrives, with
+the markers where the child set `?2004` and without them where it did not.
+Where the server is too old to say, the paste is held until its end marker
+and goes whole through [`mux_paste`](@ref), which brackets it only where the
+child asked. Nothing inside a paste is a prefix or a mouse report, and a
+marker cut in two by a read is put back together.
 """
 function iframe_input!(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
                        box::NTuple{2,Int}; oncommand = nothing)
+    f.client === nothing && return :pop
+    if !isempty(f.held)
+        bytes = vcat(f.held, bytes)
+        empty!(f.held)
+    end
+    i = 1
+    while i <= length(bytes)
+        if f.pasting
+            j = findnext(PASTE_END, bytes, i)
+            stop = j === nothing ? length(bytes) : first(j) - 1
+            k = j === nothing ? cut_marker(view(bytes, i:stop), PASTE_END, 1) : 0
+            append!(f.paste, view(bytes, i:stop-k))
+            append!(f.held, view(bytes, stop-k+1:stop))
+            if j !== nothing
+                f.pasting = false
+                f.brackets === true && append!(f.paste, PASTE_END)
+            end
+            if f.brackets !== nothing || j !== nothing
+                live!(f, box)
+                f.client === nothing ? nothing :
+                f.brackets === nothing ? mux_paste(f.client, f.paste) :
+                                         mux_keys(f.client, f.paste)
+                empty!(f.paste)
+            end
+            j === nothing && return :ok
+            i = last(j) + 1
+        else
+            j = findnext(PASTE_START, bytes, i)
+            stop = j === nothing ? length(bytes) : first(j) - 1
+            # Only a cut that has got as far as `ESC [ 2` is held: a lone
+            # escape at the end of a read is the escape key, and holding it
+            # would hold the key.
+            k = j === nothing ? cut_marker(view(bytes, i:stop), PASTE_START, 3) : 0
+            k > 0 && append!(f.held, view(bytes, stop-k+1:stop))
+            act = typed_input!(f, bytes[i:stop-k], origin, box; oncommand)
+            act === :pop && return :pop
+            j === nothing && break
+            f.pasting = true
+            f.brackets = f.client === nothing ? nothing : mux_brackets(f.client)
+            f.brackets === true && append!(f.paste, PASTE_START)
+            i = last(j) + 1
+        end
+    end
+    :ok
+end
+
+"""What was typed, as opposed to pasted: mouse reports moved, the prefix held."""
+function typed_input!(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
+                      box::NTuple{2,Int}; oncommand = nothing)
     f.client === nothing && return :pop
     was = f.scroll
     bytes = retarget_mouse(f, bytes, origin, box)
@@ -433,13 +521,7 @@ function iframe_input!(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
     out = UInt8[]
     flush!() = begin
         isempty(out) && return
-        # Typing snaps back to the live screen, the way every terminal does -
-        # what you type is going to the bottom of it, so that is where you want
-        # to be looking.
-        if f.scroll != 0
-            f.scroll = 0
-            iframe_sync!(f, box...)
-        end
+        live!(f, box)
         mux_keys(f.client, out)
         empty!(out)
     end

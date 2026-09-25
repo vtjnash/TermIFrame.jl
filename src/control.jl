@@ -421,6 +421,68 @@ end
 mux_keys(c::MuxClient, s::AbstractString) = mux_keys(c, collect(codeunits(s)))
 
 """
+    mux_brackets(c) -> Bool | Nothing
+
+Whether the child has bracketed paste on, or `nothing` where the server cannot
+say.
+
+`#{bracket_paste_flag}` is tmux 3.7's, and it is the server that expands it -
+whichever binary started the server, which may be the user's own long-running
+one - so an older server answers with nothing at all. Asked rather than
+followed from the child's output: `?2004h` in `%output` is seen only while a
+client is attached, and a child that set it before this attach (an agent
+reopened) never says it again.
+"""
+function mux_brackets(c::MuxClient)
+    ok, lines = mux_ask(c, string("display-message -p -t =", c.name,
+                                  ": '#{bracket_paste_flag}'"))
+    (ok && !isempty(lines)) || return nothing
+    v = strip(lines[1])
+    v == "1" ? true : v == "0" ? false : nothing
+end
+
+"""
+    mux_paste(c, bytes) -> Bool
+
+Paste `bytes` into the pane, bracketed only if the child asked for it, in one
+piece - for a server that cannot say whether it did ([`mux_brackets`](@ref)).
+
+`paste-buffer -p` asks the pane itself: the markers go round the text where
+the child set `?2004` and nowhere else.
+`send-keys -H` would send markers as the bytes they are, into a shell that
+never asked for them. `-r` keeps the text as the terminal sent it, since tmux
+would otherwise turn every newline into a carriage return.
+
+The text goes into a buffer of this client's own in pieces, each a
+double-quoted string with every byte past the plainest written in octal - the
+control-mode command line is parsed, so a newline would end it and `\$`, `~`
+and `#` mean something. A NUL cannot be written at all (it ends the string
+tmux builds), so it is dropped; `-d` deletes the buffer once it is pasted.
+"""
+function mux_paste(c::MuxClient, bytes::AbstractVector{UInt8})
+    bytes = filter(!iszero, bytes)
+    isempty(bytes) && return true
+    buf = string("paste-", getpid())       # this process's, and plain to write
+    for (i, part) in enumerate(Iterators.partition(bytes, 4096))
+        q = sprint() do io
+            print(io, '"')
+            for b in part
+                if UInt8('a') <= b <= UInt8('z') || UInt8('A') <= b <= UInt8('Z') ||
+                   UInt8('0') <= b <= UInt8('9') || b == UInt8(' ')
+                    print(io, Char(b))
+                else
+                    print(io, '\\', string(b; base = 8, pad = 3))
+                end
+            end
+            print(io, '"')
+        end
+        first(mux_ask(c, string("set-buffer ", i == 1 ? "" : "-a ", "-b ", buf, " ", q))) ||
+            return false
+    end
+    first(mux_ask(c, string("paste-buffer -p -r -d -b ", buf, " -t =", c.name, ":")))
+end
+
+"""
     mux_close(c)
 
 Let go of the client. The session it was attached to keeps running, which is the

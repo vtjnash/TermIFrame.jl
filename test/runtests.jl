@@ -448,6 +448,50 @@ else
         mux_kill(n)
     end
 
+    @testset "a paste is bracketed only for a child that asked" begin
+        # Two children that record what reaches them; one of them turns
+        # bracketed paste on, as a shell's line editor or an agent does.
+        got = Dict{Bool,String}()
+        # `#{bracket_paste_flag}` is tmux 3.7's, and the server's to expand.
+        knows = something(tryparse(Float64, match(r"[0-9]+\.[0-9]+",
+            readchomp(`$(mux_cmd("-V"))`)).match), 0.0) >= 3.7
+        for asks in (false, true)
+            n = mux_name("test", asks ? "brackets" : "plain")
+            mux_kill(n)
+            out = tempname()
+            mux_start(n, pwd(), string("sh -c 'stty raw -echo; ",
+                asks ? "printf \"\\033[?2004h\"; " : "", "cat > ", out, "'"))
+            f = iframe(n, "paste")
+            box = iframe_box(80, 24)
+            sleep(0.5)
+            iframe_sync!(f, box...)
+            # A paste cut three ways by the reads it arrived in, one of them
+            # through the end marker, with typing either side. The prefix
+            # inside it is text like the rest.
+            b(s) = collect(codeunits(s))
+            @test iframe_input!(f, b("x\e[200~a\rb \$HOME"), (3, 2), box) === :ok
+            @test f.pasting
+            # A server that can say whether the child asked streams the paste
+            # as it arrives; one that cannot (before tmux 3.7) holds it whole.
+            sleep(0.5)
+            head = string("x", f.brackets === true ? "\e[200~a\rb \$HOME" :
+                               f.brackets === false ? "a\rb \$HOME" : "")
+            @test read(out, String) == head
+            @test f.brackets === (asks ? true : false) || (f.brackets === nothing && !knows)
+            @test iframe_input!(f, vcat(b("\"q\" "), [IFRAME_PREFIX], b("q\e[20")), (3, 2), box) === :ok
+            @test iframe_input!(f, b("1~y"), (3, 2), box) === :ok
+            @test !f.pasting && !f.pending && isempty(f.held)
+            sleep(0.5)
+            got[asks] = read(out, String)
+            iframe_close!(f)
+            mux_kill(n)
+            rm(out; force = true)
+        end
+        text = "a\rb \$HOME\"q\" \x1dq"
+        @test got[false] == string("x", text, "y")
+        @test got[true] == string("x\e[200~", text, "\e[201~y")
+    end
+
     @testset "the child exiting is told once" begin
         n = mux_name("test", "onend")
         mux_kill(n)
