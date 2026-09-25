@@ -201,15 +201,23 @@ function mux_dead!(c::MuxClient, why::AbstractString)
 end
 
 """
-    mux_open(name; onoutput) -> MuxClient | Nothing
+    mux_open(name; onoutput, ondead) -> MuxClient | Nothing
 
 Attach to `name` in control mode.
 
 The session must already exist; starting one is [`mux_start`](@ref)'s job, and
 keeping the two separate is what lets a session outlive every client that has
 looked at it.
+
+`onoutput(pane, bytes)` is called from the reader for each `%output` line, and
+`ondead()` once, from the same task, when the reader stops - the session ended,
+the server went away, or the client was closed. The second is not the first
+with nothing to say: a child that writes its last words and then takes a while
+to exit ends the session after the last `%output`, and a host that redraws on
+output alone never looks again. It went on showing the child's final screen,
+with every key sent to a client that was already dead.
 """
-function mux_open(name::AbstractString; onoutput = nothing)
+function mux_open(name::AbstractString; onoutput = nothing, ondead = nothing)
     cmd = mux_cmd("-C", "attach", "-t=" * String(name))
     cmd === nothing && return nothing
     mux_alive(name) || return nothing
@@ -240,6 +248,11 @@ function mux_open(name::AbstractString; onoutput = nothing)
                                 first(sprint(showerror, e), 80)))
         finally
             isopen(c.replies) && put!(c.replies, (false, ["client closed"]))
+            try
+                ondead === nothing || ondead()
+            catch
+                # The host's to report; the reader is finishing either way.
+            end
         end
     end
     mux_sync!(c) || (mux_close(c); return nothing)

@@ -31,7 +31,8 @@ to finish before drawing it.
 The callbacks are how a host gets its own behaviour in without this knowing
 about it:
 
-  * `onwake`  — the child wrote something; redraw. Runs on the reader task.
+  * `onwake`  — the child wrote something, or the session ended; redraw. Runs
+                on the reader task.
   * `onend`   — called once, when the child exits. A `String` becomes the status.
   * `suspend` — hand the whole terminal over, for `^]a`; see [`mux_attach`](@ref).
   * `onerror` — `(exception, backtrace, what)`, for a host with somewhere to log.
@@ -111,7 +112,9 @@ function iframe(name::AbstractString, title::AbstractString;
             # find out about on its own. It must not take the reader down too.
         end
         onwake === nothing || onwake()
-    end)
+    end,
+    # And once more when it ends, so the host syncs and finds it gone.
+    ondead = onwake)
     c === nothing && return nothing
     IFrame(String(name), String(title), c, String[], (0, 0), "", false,
            (0, 0, false), false, 0, 0, false, false, nothing, UInt8[], UInt8[],
@@ -464,6 +467,11 @@ marker cut in two by a read is put back together.
 function iframe_input!(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
                        box::NTuple{2,Int}; oncommand = nothing)
     f.client === nothing && return :pop
+    # A key that finds the client dead is the first the host has heard of it,
+    # when no wake said so: it is spent on saying the session ended, as a
+    # sync would have, and the next one leaves - rather than going to a
+    # client that cannot send it, forever.
+    f.client.dead && (iframe_sync!(f, box...); return :ok)
     if !isempty(f.held)
         bytes = vcat(f.held, bytes)
         empty!(f.held)
