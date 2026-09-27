@@ -174,17 +174,42 @@ end
 
 """An attached control-mode client.
 
-`onoutput` is called with the pane id and the bytes the child wrote whenever
-that pane changes. It runs on the reader task, so it should do the least
-possible: wake whatever draws, and pass on anything the child said that the
-*screen* cannot carry - see [`passthrough`](@ref).
+What the reader hears is kept here for the host to read, rather than handed to
+functions the host passed in: a callback is a field of type `Any` and a dynamic
+call on every `%output`, and all any host did with one was raise a wake.
+
+  * `wake`      an `Event` that resets as it is taken, notified on each
+                `%output` line, each notice below and once as the reader stops.
+                [`mux_wait`](@ref) is the way to wait on it. A level and not a
+                queue: a burst of output is one wake to whoever is waiting, and
+                the reader never waits on the host to take it.
+  * `relay`     what the child wrote that the screen cannot carry, not yet
+                taken - see [`passthrough`](@ref) and [`mux_relay!`](@ref).
+  * `sessions`  `%sessions-changed` has come since the host last lowered it.
+  * `subs`      each subscription's latest value, by name (`refresh-client -B`).
+  * `outputs`   how many `%output` lines have arrived, ever.
+  * `bells`     the command pipe's bell subscription took
+                ([`mux_pipe_open`](@ref)); a change in who rang is then a wake.
+
+`lock` is held by [`mux_ask`](@ref) from the write to the reply. Replies are
+matched by position, so two tasks asking one client at once could each take
+the other's answer; a client with one caller never waits on it. The reader
+takes no lock: it only puts replies on `replies`, and tmux sends no
+notification inside a reply.
 """
 mutable struct MuxClient
     name::String
     proc::Base.Process
     proto::MuxProto
     replies::Channel{Any}
-    onoutput::Any
+    lock::ReentrantLock
+    wake::Base.Event
+    relay::Vector{String}
+    carry::Dict{String,Base.RefValue{String}}
+    sessions::Bool
+    subs::Dict{String,String}
+    outputs::Int
+    bells::Bool
     reader::Union{Task,Nothing}
     dead::Bool
     why::String                 # what killed it, for the status line: a
@@ -193,32 +218,34 @@ mutable struct MuxClient
                                 # when it was a reply five seconds late
 end
 
-"Mark the client dead, with the first reason kept."
+"Mark the client dead, with the first reason kept, and wake whoever waits on it."
 function mux_dead!(c::MuxClient, why::AbstractString)
     c.dead || (c.why = String(why))
     c.dead = true
+    notify(c.wake)
     nothing
 end
 
 """
-    mux_open(name; onoutput, ondead) -> MuxClient | Nothing
+    mux_open(name; flags = "") -> MuxClient | Nothing
 
 Attach to `name` in control mode.
 
 The session must already exist; starting one is [`mux_start`](@ref)'s job, and
 keeping the two separate is what lets a session outlive every client that has
-looked at it.
+looked at it. `flags` are `attach -f`'s - the command pipe is
+`no-output,ignore-size`.
 
-`onoutput(pane, bytes)` is called from the reader for each `%output` line, and
-`ondead()` once, from the same task, when the reader stops - the session ended,
-the server went away, or the client was closed. The second is not the first
-with nothing to say: a child that writes its last words and then takes a while
-to exit ends the session after the last `%output`, and a host that redraws on
-output alone never looks again. It went on showing the child's final screen,
-with every key sent to a client that was already dead.
+The reader notifies `wake` for each `%output` line, and once more when it
+stops - the session ended, the server went away, or the client was closed. The
+last is not the first with nothing to say: a child that writes its last words
+and then takes a while to exit ends the session after the last `%output`, and
+a host that redraws on output alone never looks again. It went on showing the
+child's final screen, with every key sent to a client that was already dead.
 """
-function mux_open(name::AbstractString; onoutput = nothing, ondead = nothing)
-    cmd = mux_cmd("-C", "attach", "-t=" * String(name))
+function mux_open(name::AbstractString; flags::AbstractString = "")
+    cmd = isempty(flags) ? mux_cmd("-C", "attach", "-t=" * String(name)) :
+                           mux_cmd("-C", "attach", "-f", String(flags), "-t=" * String(name))
     cmd === nothing && return nothing
     mux_alive(name) || return nothing
     proc = try
@@ -226,37 +253,92 @@ function mux_open(name::AbstractString; onoutput = nothing, ondead = nothing)
     catch
         return nothing
     end
-    c = MuxClient(String(name), proc, MuxProto(), Channel{Any}(Inf), onoutput, nothing,
-                  false, "")
-    c.reader = @async begin
-        try
-            for line in eachline(proc.out)
-                kind, a, b = mux_feed!(c.proto, line)
-                if kind === :reply
-                    put!(c.replies, (a, b))
-                elseif kind === :output
-                    c.onoutput === nothing || c.onoutput(a, b)
-                elseif kind === :notice && a == "exit"
+    c = MuxClient(String(name), proc, MuxProto(), Channel{Any}(Inf), ReentrantLock(),
+                  Base.Event(true), String[], Dict{String,Base.RefValue{String}}(),
+                  false, Dict{String,String}(), 0, false, nothing, false, "")
+    c.reader = @async mux_read(c)
+    mux_sync!(c) || (mux_close(c); return nothing)
+    c
+end
+
+"""The reader: every line the client says, until it stops.
+
+Never waits on the host. It puts replies on a channel of unbounded size, keeps
+what it heard on the client, and notifies an `Event`, none of which blocks.
+"""
+function mux_read(c::MuxClient)
+    try
+        for line in eachline(c.proc.out)
+            kind, a, b = mux_feed!(c.proto, line)
+            if kind === :reply
+                put!(c.replies, (a, b))
+            elseif kind === :output
+                c.outputs += 1
+                # What a redraw cannot carry - the clipboard and nothing else,
+                # for the reasons in `passthrough` - kept for the host to take
+                # on its own task, between frames. One carry per pane: an
+                # `%output` line is a cut of one pane's stream, and a clipboard
+                # longer than the cut finishes on a later line.
+                append!(c.relay, passthrough(get!(() -> Ref(""), c.carry, a), b))
+                notify(c.wake)
+            elseif kind === :notice
+                if a == "exit"
                     mux_dead!(c, isempty(b) ? "the server said exit" :
                                  string("the server said exit: ", b))
                     break
+                elseif a == "sessions-changed"
+                    c.sessions = true
+                    notify(c.wake)
+                elseif a == "subscription-changed"
+                    # `name $s @w w %p : value` - the value is everything after
+                    # the first ` : `, and may itself hold one.
+                    sp = findfirst(' ', b)
+                    at = findfirst(" : ", b)
+                    if sp !== nothing && at !== nothing
+                        c.subs[b[1:prevind(b, sp)]] = b[last(at)+1:end]
+                        notify(c.wake)
+                    end
                 end
             end
-            mux_dead!(c, "the control client closed its end")
-        catch e
-            mux_dead!(c, string("reading the control client: ",
-                                first(sprint(showerror, e), 80)))
-        finally
-            isopen(c.replies) && put!(c.replies, (false, ["client closed"]))
-            try
-                ondead === nothing || ondead()
-            catch
-                # The host's to report; the reader is finishing either way.
-            end
         end
+        mux_dead!(c, "the control client closed its end")
+    catch e
+        mux_dead!(c, string("reading the control client: ",
+                            first(sprint(showerror, e), 80)))
+    finally
+        isopen(c.replies) && put!(c.replies, (false, ["client closed"]))
+        notify(c.wake)
     end
-    mux_sync!(c) || (mux_close(c); return nothing)
-    c
+end
+
+"""
+    mux_wait(c) -> Bool
+
+Wait until the client has something to say - output, a notice, or that it
+ended - and answer whether it is still alive. A host's loop is
+
+    @async while mux_wait(c); redraw(); end; redraw()
+
+with the last one for the end, which the host has to see as much as any output.
+Returns at once, `false`, for a client already dead.
+"""
+function mux_wait(c::MuxClient)
+    c.dead && return false
+    wait(c.wake)
+    !c.dead
+end
+
+"""
+    mux_relay!(c) -> Vector{String}
+
+The sequences the child wrote that the screen cannot carry, taken: the host
+prints them to its own terminal, which is the next one up. See
+[`passthrough`](@ref).
+"""
+function mux_relay!(c::MuxClient)
+    isempty(c.relay) && return String[]
+    out, c.relay = c.relay, String[]
+    out
 end
 
 """
@@ -276,6 +358,10 @@ different number of them. A token nothing else could produce does not care:
 throw replies away until the one that echoes it comes back.
 """
 function mux_sync!(c::MuxClient; timeout::Real = 5.0)
+    @lock c.lock mux_sync_locked!(c, timeout)
+end
+
+function mux_sync_locked!(c::MuxClient, timeout::Real)
     tok = string("iframe-sync-", string(rand(UInt32); base = 16))
     try
         write(c.proc.in, "display-message -p ", tok, "\n")
@@ -311,9 +397,15 @@ Send one command and wait for its reply.
 Replies come back in the order the commands went out, so they are matched by
 position rather than by parsing the id out of `%begin`. A timeout therefore
 cannot be recovered from - the next reply would answer the wrong question - so
-it kills the client instead of desynchronising it.
+it kills the client instead of desynchronising it. For the same reason the
+ask holds the client's lock from the write to the reply: two tasks asking at
+once would otherwise each take the other's answer.
 """
 function mux_ask(c::MuxClient, cmd::AbstractString; timeout::Real = 5.0)
+    @lock c.lock mux_ask_locked(c, cmd, timeout)
+end
+
+function mux_ask_locked(c::MuxClient, cmd::AbstractString, timeout::Real)
     c.dead && return (false, ["client closed"])
     try
         write(c.proc.in, cmd, '\n')
@@ -505,5 +597,128 @@ function mux_close(c::MuxClient)
     mux_dead!(c, "closed")
     try; close(c.proc.in); catch; end
     try; kill(c.proc); catch; end
+    nothing
+end
+
+# --- the command pipe --------------------------------------------------------
+#
+# Every `mux(...)` is a `tmux` process otherwise, ~3 ms each (3.2 ms measured),
+# where the same command down a control client is a few hundredths of one. A
+# control client has to be attached to stay open - with any other command
+# `tmux -C` runs it and exits - and attaching to a session of ours counts as
+# looking at it and clears its bell. So the pipe is parked on a hidden session
+# of its own, named outside the prefix, where a session beside it was left
+# `attached=0` with its bell standing (measured on 3.5a).
+#
+# One per process, which for a host is one per browser: a global, as the
+# prefix is. Separate from any iframe's client - a pane's client ends with its
+# session, and one client for both would `switch-client` from session to
+# session, clearing each bell it passed.
+
+"""The command pipe while one is open: see [`mux_pipe_open`](@ref)."""
+const MUX_PIPE = Ref{Union{Nothing,MuxClient}}(nothing)
+
+"""
+    mux_pipe() -> MuxClient | Nothing
+
+The command pipe, if one is open and alive. What [`mux`](@ref) sends down.
+"""
+function mux_pipe()
+    c = MUX_PIPE[]
+    (c === nothing || c.dead) ? nothing : c
+end
+
+"""The hidden session a process parks its pipe on: `_<prefix>-ctl-<pid>`,
+outside the prefix, so that [`mux_sessions`](@ref) and [`mux_list`](@ref) do
+not count it."""
+pipe_session(pid::Integer = getpid()) = string("_", MUX_PREFIX[], "-ctl-", pid)
+
+"""The subscription the pipe asks for: which sessions of ours have their bell
+standing, as their ids. tmux checks it once a second and says
+`%subscription-changed` when the answer differs, which is how a host hears a
+bell without listing the sessions on a clock. The `S:` loop is over every
+session on the server, where a subscription is otherwise about the session the
+client is attached to - the hidden one."""
+bell_format(prefix::AbstractString = MUX_PREFIX[]) =
+    string("#{S:#{?#{&&:#{m:", prefix, "-*,#{session_name}},#{window_bell_flag}},#{session_id} ,}}")
+
+"""The name the bell subscription is kept under in the pipe's `subs`."""
+const MUX_BELLS = "bells"
+
+"""
+    mux_pipe_open() -> MuxClient | Nothing
+
+Open the command pipe, or answer the one already open.
+
+A server is started by the `new-session` under it if there is none, so a host
+opens this only once there is a session of its own to talk about - found at
+launch, or just started - and closes it when the last one ends
+([`mux_pipe_close`](@ref)); a pipe with nothing left to ask about would keep a
+server up for itself.
+
+The hidden session runs `cat`, which waits on a terminal nobody types into, and
+its client is `no-output,ignore-size`: nothing it shows is read, and its size is
+nobody's business. It ends with its client: `destroy-unattached` is set once the
+client is on it - set on a session with nobody attached it ends it on the spot
+(measured on 3.5a) - so a host that dies closes the client's stdin, the client
+exits and the session goes. A host that died between the two leaves one behind,
+and the next to open a pipe ends it, since it would keep the server up.
+
+The bell subscription ([`bell_format`](@ref)) is asked for here; `bells` on the
+client says whether it took, which a server before 3.2 would refuse. Answers
+`nothing` where there is no tmux or the attach failed, and [`mux`](@ref) goes on
+spawning.
+"""
+function mux_pipe_open()
+    c = mux_pipe()
+    c === nothing || return c
+    MUX_PIPE[] = nothing
+    mux_bin() === nothing && return nothing
+    mux_pipe_sweep()
+    name = pipe_session()
+    first(mux_spawn("new-session", "-d", "-s", name, "cat")) || return nothing
+    c = mux_open(name; flags = "no-output,ignore-size")
+    c === nothing && (mux_spawn("kill-session", "-t=" * name); return nothing)
+    mux_ask(c, mux_line(["set", "-t", name, "destroy-unattached", "on"]))
+    c.bells = first(mux_ask(c, mux_line(["refresh-client", "-B",
+                                         string(MUX_BELLS, "::", bell_format())])))
+    MUX_PIPE[] = c
+    c
+end
+
+"""End the hidden sessions of pipes whose process is gone: a host that died
+after starting one and before its client was on it. Not our own, and not one
+whose name does not end in a pid."""
+function mux_pipe_sweep()
+    ok, out = mux_spawn("list-sessions", "-F", "#{session_name}")
+    ok || return
+    p = string("_", MUX_PREFIX[], "-ctl-")
+    for n in split(out, '\n'; keepempty = false)
+        startswith(n, p) || continue
+        pid = tryparse(Int, n[ncodeunits(p)+1:end])
+        (pid === nothing || pid == getpid() || pid_alive(pid)) && continue
+        mux_spawn("kill-session", "-t=" * String(n))
+    end
+end
+
+"Whether a process of this id is running: signal 0, which only asks."
+pid_alive(pid::Integer) =
+    ccall(:uv_kill, Cint, (Cint, Cint), pid, 0) != Base.UV_ESRCH
+
+"""
+    mux_pipe_close()
+
+Close the command pipe, if one is open, and end its hidden session: when the
+host's last session has ended, and when the host exits. Commands are spawned
+again from here on. Closing the client ends the session by itself
+(`destroy-unattached`); the `kill-session` after it is for a server on which
+that did not take.
+"""
+function mux_pipe_close()
+    c = MUX_PIPE[]
+    MUX_PIPE[] = nothing
+    c === nothing && return nothing
+    mux_close(c)
+    mux_spawn("kill-session", "-t=" * c.name)
     nothing
 end

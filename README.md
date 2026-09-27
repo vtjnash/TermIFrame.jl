@@ -27,7 +27,9 @@ talking to, and one known version beats whatever happens to be installed.
 using TermIFrame
 
 mux_start("demo", pwd(), "htop")
-f = iframe("demo", "htop"; onwake = () -> redraw())
+f = iframe("demo", "htop")
+c = f.client
+@async (while mux_wait(c); redraw(); end; redraw())   # output, and the end
 
 cols, rows = iframe_box(w, h)            # the child's size inside your box
 iframe_sync!(f, cols, rows)              # size it, read its screen back
@@ -36,6 +38,11 @@ for line in iframe_rows(f, w, h)         # `h` rows of exactly `w` columns
 end
 iframe_input!(f, bytes, iframe_origin(x, y), (cols, rows))
 ```
+
+The host hands in no functions. It waits on the client for output and reads what
+changed off the iframe: `client` gone to `nothing` after a sync is the child
+having exited, and `iframe_input!` answering `:attach` is `^]a` asking for the
+terminal, which the host hands over with `mux_attach(f.name; suspend)`.
 
 ## What it does that a bare `tmux attach` does not
 
@@ -110,11 +117,32 @@ inherit that agent's session and its control channel, and a program started in
 an iframe is meant to be its own session, answerable to the person watching it
 and to nobody else.
 
+## The command pipe
+
+Every session command is a `tmux` process by default, ~3 ms each. A host that
+issues many - a browser listing its sessions, tagging them, marking them read -
+opens one control-mode client for all of them:
+
+```julia
+mux_pipe_open()     # once a session of ours exists
+mux(...)            # every command goes down it while it is open, ~0.03 ms
+mux_pipe_close()    # when the last session has ended, and on exit
+```
+
+A control client has to be attached to stay open, and attaching to a session
+clears its bell, so the pipe is parked on a hidden session of its own,
+`_<prefix>-ctl-<pid>`, which ends with it. It also subscribes to the bells of
+every session under the prefix: `mux_wait` on the pipe returns when one rings
+or is heard, or when a session starts or ends (`sessions` on the client), so a
+host hears a bell without listing the sessions on a clock. `switch-client` and
+the attach behind `mux_seen!` are always spawned: they are about the client
+that asks.
+
 ## Configuration
 
 | | |
 |---|---|
-| `MUX_PREFIX[]` | the prefix naming the sessions this host owns; only these are listed or killed |
+| `MUX_PREFIX[]` | the prefix naming the sessions this host owns; only these are listed or killed, and the pipe's hidden session is named after it |
 | `MUX_ENV[]` | the environment variable naming a tmux binary to use instead of the bundled `tmux_jll` one |
 | `SCRUB_PREFIXES[]` | environment-variable prefixes an embedded program starts without |
 | `IFRAME_PREFIX` | the prefix byte, `^]` |

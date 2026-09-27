@@ -109,6 +109,17 @@ end
     end
 end
 
+@testset "a command as a control line" begin
+    # tmux's own syntax, not a shell's: plain words go as they are, anything
+    # else single-quoted, inside which every character is itself.
+    @test mux_line(["list-panes", "-a", "-t=wl-x:", "@url"]) == "list-panes -a -t=wl-x: @url"
+    @test mux_line(["display", "-p", "#{pane_tty}"]) == "display -p '#{pane_tty}'"
+    @test mux_line(["set", "@x", "y;"]) == "set @x 'y;'"
+    @test mux_line(["set", "@x", "it's"]) == raw"set @x 'it'\''s'"
+    @test mux_line(["set", "@x", ""]) == "set @x ''"
+    @test mux_line(["x", "~ \$HOME {a}"]) == "x '~ \$HOME {a}'"
+end
+
 @testset "the control-mode protocol" begin
     p = MuxProto()
     @test mux_feed!(p, "%begin 1 2 1") == (:more, nothing, nothing)
@@ -495,32 +506,115 @@ else
         @test got[true] == string("x\e[200~", text, "\e[201~y")
     end
 
-    @testset "the child exiting is told once" begin
+    @testset "the child exiting is the host's to see" begin
         n = mux_name("test", "onend")
         mux_kill(n)
         mux_start(n, pwd(), "sh -c 'sleep 0.3'")
-        calls = Ref(0)
-        f = iframe(n, "brief"; onend = () -> (calls[] += 1; "it finished"))
+        f = iframe(n, "brief")
+        c = f.client
+        # The host waits on the client, and hears the end as one more wake.
+        woke = Ref(0)
+        t = @async (while mux_wait(c); woke[] += 1; end; woke[] += 1)
         box = iframe_box(40, 10)
         for _ in 1:40
             iframe_sync!(f, box...)
             f.client === nothing && break
             sleep(0.25)
         end
-        @test f.client === nothing
-        @test calls[] == 1 && f.status == "it finished"
-        # And never again from a later sync: an editor's file is read back when
-        # it exits, and reading it twice would undo an edit made in between.
-        iframe_sync!(f, box...)
-        @test calls[] == 1
-        # What the child left behind outranks saying it has gone: that it ended
-        # is the less useful of the two things to be told.
-        @test iframe_note(f) == "it finished"
+        @test f.client === nothing && occursin("session ended", f.status)
+        @test timedwait(() -> istaskdone(t), 2.0) === :ok && woke[] >= 1
+        # And a dead client answers at once, not never.
+        @test mux_wait(c) === false
+        # A later sync has nothing to find: what the host does about the end is
+        # done once, by the host, from the first one.
+        @test iframe_sync!(f, box...) === false
         f.status = ""
         @test occursin(n, iframe_note(f)) && occursin("K to kill", iframe_note(f))
         # And the box still draws with no child behind it.
         out = iframe_rows(f, 40, 10)
         @test length(out) == 10 && all(awidth(r) == 40 for r in out)
+        mux_kill(n)
+    end
+
+    @testset "full screen is the host's to carry out" begin
+        n = mux_name("test", "attach")
+        mux_kill(n)
+        mux_start(n, pwd(), "sleep 120")
+        f = iframe(n, "demo")
+        box = iframe_box(80, 24)
+        # `^]a` asks; what is read after it goes with it.
+        @test iframe_input!(f, [IFRAME_PREFIX, UInt8('a'), UInt8('x')], (3, 2), box) === :attach
+        @test !f.pending && f.client !== nothing
+        iframe_close!(f)
+        mux_kill(n)
+    end
+
+    @testset "one command pipe for all of them" begin
+        mux_pipe_close()
+        @test mux_pipe() === nothing
+        n = mux_name("test", "pipe")
+        mux_kill(n)
+        mux_start(n, pwd(), "sleep 120")
+        hidden = pipe_session()
+        c = mux_pipe_open()
+        @test c !== nothing && mux_pipe() === c && mux_pipe_open() === c
+        @test c.bells                          # 3.2 and up
+        # Outside the prefix: not ours to list, and not counted as one of ours.
+        @test !(hidden in mux_sessions()) && n in mux_sessions()
+        @test mux_alive(hidden)
+        # Commands go down it, and answer as a process would.
+        before = c.outputs
+        @test mux_alive(n) && !mux_alive(n * "-nope")
+        @test mux_tag!(n; item = "x;", url = "it's #1 \$HOME")
+        r = only(filter(x -> x.name == n, mux_list(["item", "url"])))
+        @test r.tags == ["x;", "it's #1 \$HOME"]
+        # Looking at the list through the pipe is not looking at a session:
+        # a bell stands beside it.
+        @test mux_ring!(n)
+        sleep(0.2)
+        r = only(filter(x -> x.name == n, mux_list()))
+        @test r.bell && !r.attached
+        # And the pipe hears it: the subscription says who rang, within the
+        # second tmux checks it in.
+        @test timedwait(() -> strip(get(c.subs, MUX_BELLS, "")) == r.id, 5.0) === :ok
+        @test mux_seen!(n)
+        @test timedwait(() -> isempty(strip(get(c.subs, MUX_BELLS, "x"))), 5.0) === :ok
+        # A session starting or ending is a notice too.
+        c.sessions = false
+        mux_kill(n)
+        @test timedwait(() -> c.sessions, 2.0) === :ok
+        @test c.outputs == before              # `no-output`: nothing is drawn here
+        # Two tasks asking at once each get their own answer.
+        got = [Ref("") for _ in 1:50]
+        @sync for (i, g) in enumerate(got)
+            @async g[] = strip(last(mux("display-message", "-p", string("q", i))))
+        end
+        @test [g[] for g in got] == [string("q", i) for i in 1:50]
+        # Closing ends the hidden session with it, and commands spawn again:
+        # a pipe with nothing left to ask about must not keep a server up.
+        mux_pipe_close()
+        @test c.dead && mux_pipe() === nothing
+        @test !mux_alive(hidden)
+    end
+
+    @testset "a pipe's session outlives only a live host" begin
+        # One whose process is gone - a host that died after starting it and
+        # before its client was on it - is ended by the next pipe to open.
+        mux_pipe_close()
+        n = mux_name("test", "keepup")
+        mux_start(n, pwd(), "sleep 120")
+        pid = first(p for p in 4_000_000:-1:1 if !TermIFrame.pid_alive(p))
+        dead = pipe_session(pid)
+        mux_spawn("new-session", "-d", "-s", dead, "cat")
+        @test mux_alive(dead)
+        c = mux_pipe_open()
+        @test c !== nothing && !mux_alive(dead)
+        # And one whose client goes away takes its session with it, which is
+        # how a host that is killed leaves nothing behind.
+        hidden = c.name
+        close(c.proc.in)
+        @test timedwait(() -> !mux_alive(hidden), 5.0) === :ok
+        mux_pipe_close()
         mux_kill(n)
     end
 

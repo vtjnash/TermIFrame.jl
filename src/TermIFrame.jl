@@ -20,7 +20,9 @@ look away.
     using TermIFrame
 
     mux_start("demo", pwd(), "htop")
-    f = iframe("demo", "htop"; onwake = () -> redraw())
+    f = iframe("demo", "htop")
+    c = f.client
+    @async (while mux_wait(c); redraw(); end; redraw())   # output, and the end
 
     cols, rows = iframe_box(w, h)          # the child's size inside your box
     iframe_sync!(f, cols, rows)            # size it, read its screen
@@ -35,7 +37,7 @@ one prefix key - `^]` - which is the only key the child never gets.
 ## The pieces
 
   * `tmux.jl`    sessions: name one, start it, tag it, list them, attach
-  * `control.jl` `tmux -C`, as a protocol and as a client
+  * `control.jl` `tmux -C`, as a protocol, as a client, and as the command pipe
   * `border.jl`  the box, in Term's box characters and the theme's style
   * `iframe.jl`  the widget: size, screen, cursor, mouse, scrollback, prefix
 
@@ -58,12 +60,13 @@ import tmux_jll
 using TermInput
 
 export ESCAPE, awidth, astrip, afit, apad, amid, awrap
-export mux_bin, mux_cmd, bundled_tmux, no_mux, mux_name, mux, mux_alive, mux_start, mux_kill, mux_tag!,
+export mux_bin, mux_cmd, bundled_tmux, no_mux, mux_name, mux, mux_spawn, mux_line, mux_alive, mux_start, mux_kill, mux_tag!,
        mux_rename, mux_sessions, mux_list, MuxRow, mux_seen!, mux_ring!, mux_attach, standalone,
        MUX_PREFIX, MUX_ENV, SCRUB_PREFIXES
 export MuxProto, mux_feed!, mux_unescape, passthrough
-export MuxClient, mux_open, mux_sync!, mux_ask, mux_capture, mux_pane_state, mux_paste, mux_brackets,
-       mux_resize, mux_keys, mux_close
+export MuxClient, mux_open, mux_wait, mux_relay!, mux_sync!, mux_ask, mux_capture, mux_pane_state, mux_paste, mux_brackets,
+       mux_resize, mux_keys, mux_close,
+       MUX_PIPE, MUX_BELLS, mux_pipe, mux_pipe_open, mux_pipe_close, pipe_session
 export bordered
 export IFrame, iframe, iframe_box, iframe_origin, iframe_sync!, iframe_cursor,
        iframe_note, iframe_rows, iframe_command!, iframe_input!, iframe_close!,

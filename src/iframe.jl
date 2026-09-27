@@ -28,14 +28,18 @@ hand out, since `capture-pane` reads a grid that is always in a consistent
 state, so there is no tearing to guard against and no need to wait for a redraw
 to finish before drawing it.
 
-The callbacks are how a host gets its own behaviour in without this knowing
-about it:
+It takes no functions from the host. What the host does about it is the host's,
+from state it reads:
 
-  * `onwake`  — the child wrote something, or the session ended; redraw. Runs
-                on the reader task.
-  * `onend`   — called once, when the child exits. A `String` becomes the status.
-  * `suspend` — hand the whole terminal over, for `^]a`; see [`mux_attach`](@ref).
-  * `onerror` — `(exception, backtrace, what)`, for a host with somewhere to log.
+  * **redraw** when the client says something: [`mux_wait`](@ref) on `client`,
+    which answers once more as the session ends.
+  * **the child exited**: a sync that found the client dead leaves `client`
+    `nothing` and says so in `status`. Whatever the host does about it - an
+    editor's file read back - is done once, by the host, which is the one that
+    knows what once means.
+  * **full screen**: [`iframe_input!`](@ref) answers `:attach`, and the host
+    calls [`mux_attach`](@ref) with its own way of handing the terminal over,
+    as it takes `:pop` off its own stack.
 """
 mutable struct IFrame
     name::String
@@ -56,9 +60,6 @@ mutable struct IFrame
                                    # the server could not say and it is held
     paste::Vector{UInt8}           # the paste so far
     held::Vector{UInt8}            # the start of a marker a read cut through
-    onend::Any
-    suspend::Any
-    onerror::Any
 end
 
 """
@@ -72,11 +73,10 @@ box, the footer, which keys are whose - answers the same way either way.
 """
 IFrame(name::AbstractString, title::AbstractString = "") =
     IFrame(String(name), String(title), nothing, String[], (0, 0), "", false,
-           (0, 0, false), false, 0, 0, false, false, nothing, UInt8[], UInt8[],
-           nothing, g -> g(), nothing)
+           (0, 0, false), false, 0, 0, false, false, nothing, UInt8[], UInt8[])
 
 """
-    iframe(name, title; onwake, onend, suspend, onerror) -> IFrame | Nothing
+    iframe(name, title) -> IFrame | Nothing
 
 Open an iframe onto `name`, which must already be a running session - starting
 one is [`mux_start`](@ref)'s job.
@@ -85,40 +85,11 @@ Returns `nothing` when there is no multiplexer or no such session, so the caller
 can put a reason in its own status line rather than showing an empty box that
 never explains itself.
 """
-function iframe(name::AbstractString, title::AbstractString;
-                onwake = nothing, onend = nothing, suspend = f -> f(),
-                onerror = nothing)
-    # Two things per burst of output: redraw, and relay what a redraw cannot
-    # carry - which is the clipboard and nothing else, for the reasons in
-    # `passthrough`. It goes to this process's own stdout, where the terminal a
-    # person is actually looking at is the next thing up.
-    #
-    # This runs on the reader task, so it can land in the middle of the host
-    # writing a frame. That is safe for exactly the reason only OSC 52 is
-    # relayed: the sequence paints nothing and moves no cursor, so wherever it
-    # arrives in the stream it changes nothing about what the frame draws.
-    #
-    # One carry per pane: an `%output` line is a cut of one pane's stream, and
-    # a clipboard longer than the cut finishes on a later line - see
-    # `passthrough`.
-    carry = Dict{String,Base.RefValue{String}}()
-    c = mux_open(name; onoutput = (pane, bytes) -> begin
-        try
-            for seq in passthrough(get!(() -> Ref(""), carry, pane), bytes)
-                print(seq)
-            end
-        catch
-            # A closed stdout is the terminal going away, which the host will
-            # find out about on its own. It must not take the reader down too.
-        end
-        onwake === nothing || onwake()
-    end,
-    # And once more when it ends, so the host syncs and finds it gone.
-    ondead = onwake)
+function iframe(name::AbstractString, title::AbstractString)
+    c = mux_open(name)
     c === nothing && return nothing
     IFrame(String(name), String(title), c, String[], (0, 0), "", false,
-           (0, 0, false), false, 0, 0, false, false, nothing, UInt8[], UInt8[],
-           onend, suspend, onerror)
+           (0, 0, false), false, 0, 0, false, false, nothing, UInt8[], UInt8[])
 end
 
 """
@@ -152,9 +123,22 @@ Kept apart from drawing, which should be a pure function of what this leaves
 behind: a host redraws far more often than the child changes.
 
 Returns whether anything is worth redrawing, which for a live child is always.
+
+What the child wrote that a redraw cannot carry - the clipboard, see
+[`passthrough`](@ref) - is printed here, to this process's own stdout, where the
+terminal a person is looking at is the next thing up. Here and not on the
+reader: the host's own task, between its frames, is the one place nothing else
+is writing.
 """
 function iframe_sync!(f::IFrame, cols::Integer, rows::Integer)
     f.client === nothing && return false
+    relay = mux_relay!(f.client)
+    isempty(relay) || try
+        foreach(seq -> print(stdout, seq), relay)
+    catch
+        # A closed stdout is the terminal going away, which the host will find
+        # out about on its own.
+    end
     box = (Int(cols), Int(rows))
     if box != f.sized
         mux_resize(f.client, box[1], box[2]) && (f.sized = box)
@@ -166,18 +150,6 @@ function iframe_sync!(f::IFrame, cols::Integer, rows::Integer)
         f.status = isempty(f.client.why) ? "session ended" :
                    string("session ended: ", f.client.why)
         f.client = nothing
-        # Once, and never from a later sync: an editor's file is read back when
-        # it exits, and reading it twice would undo an edit made in between.
-        if f.onend !== nothing
-            g, f.onend = f.onend, nothing
-            r = try
-                g()
-            catch e
-                f.onerror === nothing || f.onerror(e, catch_backtrace(), "iframe onend")
-                "the child's result could not be taken"
-            end
-            r isa String && !isempty(r) && (f.status = r)
-        end
         return true
     end
     # Every row is closed off, or an unterminated colour would run out of the
@@ -286,16 +258,17 @@ iframe_keys() =
     "^]q leave · ^]K kill · ^]a full screen · ^]r reread · ^]] literal"
 
 """
-    iframe_command!(f, b, box; oncommand) -> :ok | :pop | :literal
+    iframe_command!(f, b, box; oncommand) -> :ok | :pop | :attach | :literal
 
-One key after the prefix. `box` is the child's current size, since two of these
-keys re-read the screen and the size to read it at is the host's to say - the
-terminal may have been resized while `^]a` had it.
+One key after the prefix. `box` is the child's current size, since `^]r`
+re-reads the screen and the size to read it at is the host's to say.
 
 `oncommand` is the host's, called with the byte and returning `:ok`, `:pop` or
 `:unhandled`; it is asked first so a host can claim a key, and must leave
 [`IFRAME_KEYS`](@ref) alone. `:literal` means send the prefix itself through to
-the child.
+the child. `:attach` is `^]a`, which is the host's to carry out: handing the
+terminal over is a thing only it knows how to do (see [`mux_attach`](@ref)),
+and the sync after it is at the size the host says then.
 """
 function iframe_command!(f::IFrame, b::UInt8, box::NTuple{2,Int};
                          oncommand = nothing)
@@ -313,9 +286,7 @@ function iframe_command!(f::IFrame, b::UInt8, box::NTuple{2,Int};
         mux_kill(f.name)
         :pop
     elseif b == UInt8('a')
-        mux_attach(f.name; suspend = f.suspend)
-        iframe_sync!(f, box...)
-        :ok
+        :attach
     elseif b == UInt8('r')
         iframe_sync!(f, box...)
         :ok
@@ -441,7 +412,7 @@ function live!(f::IFrame, box::NTuple{2,Int})
 end
 
 """
-    iframe_input!(f, bytes, origin, box; oncommand) -> :ok | :pop
+    iframe_input!(f, bytes, origin, box; oncommand) -> :ok | :pop | :attach
 
 Bytes as typed, straight through to the child.
 
@@ -452,6 +423,8 @@ something not yet written.
 
 The prefix is the one byte held back rather than forwarded, and it is tracked
 across bursts: it can arrive alone, or ahead of its key in the same read.
+`:pop` and `:attach` are answered at once, and what was read after them goes
+with them.
 
 **A bracketed paste is text, not keys.** A host that turns bracketed paste on
 for its own sake - so that a paste is never read as its commands - hands the
@@ -506,7 +479,7 @@ function iframe_input!(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
             k = j === nothing ? cut_marker(view(bytes, i:stop), PASTE_START, 3) : 0
             k > 0 && append!(f.held, view(bytes, stop-k+1:stop))
             act = typed_input!(f, bytes[i:stop-k], origin, box; oncommand)
-            act === :pop && return :pop
+            act === :ok || return act
             j === nothing && break
             f.pasting = true
             f.brackets = f.client === nothing ? nothing : mux_brackets(f.client)
@@ -540,7 +513,7 @@ function typed_input!(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
             # the order it was typed in, whatever the prefix then does.
             flush!()
             act = iframe_command!(f, b, box; oncommand)
-            act === :pop && return :pop
+            (act === :pop || act === :attach) && return act
             act === :literal && push!(out, IFRAME_PREFIX)
         elseif b == IFRAME_PREFIX
             f.pending = true

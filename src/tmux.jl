@@ -134,14 +134,69 @@ const MUX_PREFIX = Ref("iframe")
 
 """
     mux(args...) -> (ok, output)
+    mux(cmds::Vector{Vector{String}}) -> (ok, output)
 
-Run one multiplexer command.
+Run one multiplexer command, or several in order - stopping at the first that
+fails - with the output of all of them.
+
+Down the command pipe while one is open ([`mux_pipe_open`](@ref)), and as a
+`tmux` process otherwise: a process is ~3 ms, the same command on the pipe a
+few hundredths of one. Which one ran is not the caller's concern; what each
+needs quoting against is, and differs, so it is done here -
+[`mux_line`](@ref) for the pipe and [`mux_spawn`](@ref) for a process.
+A command with a newline in it cannot be written as a control line and is
+spawned whatever is open.
 
 Never throws: every caller is on a keystroke path where a missing binary or a
 dead server has to become a status line, not a backtrace.
 """
-function mux(args::AbstractString...)
-    cmd = mux_cmd(args...)
+mux(args::AbstractString...) = mux([String[String(a) for a in args]])
+
+function mux(cmds::Vector{Vector{String}})
+    c = mux_pipe()
+    if c !== nothing && !any(cmd -> any(a -> occursin('\n', a) || occursin('\r', a), cmd), cmds)
+        out = IOBuffer()
+        for (i, cmd) in enumerate(cmds)
+            ok, lines = mux_ask(c, mux_line(cmd))
+            # A pipe that died under the ask is not an answer: the rest go as
+            # processes. Everything sent this way is idempotent or says so -
+            # a `new-session` that did get through is `duplicate session`.
+            (!ok && c.dead) && return mux_spawn(cmds[i:end])
+            for l in lines
+                println(out, l)
+            end
+            ok || return (false, String(take!(out)))
+        end
+        return (true, String(take!(out)))
+    end
+    mux_spawn(cmds)
+end
+
+"""
+    mux_spawn(args...) -> (ok, output)
+
+Run one multiplexer command as a process of its own, whatever pipe is open.
+
+For the commands that are about the client asking: `switch-client` moves the
+client it came from, which down the pipe would be the pipe, and an attach is a
+client of its own ([`mux_seen!`](@ref)).
+
+Several commands are one process, joined by `;`. In an argument, a `;` at the
+end is a separator too - `set @x 'y;'` sets `y`, measured on 3.5a - so one is
+sent as `\\;`, which tmux reads as the character. The rule is the argument
+list's: on a control line a quoted `'y;'` is `y;`, and that is `mux_line`'s.
+"""
+mux_spawn(args::AbstractString...) = mux_spawn([String[String(a) for a in args]])
+
+function mux_spawn(cmds::Vector{Vector{String}})
+    argv = String[]
+    for cmd in cmds
+        isempty(argv) || push!(argv, ";")
+        for a in cmd
+            push!(argv, endswith(a, ';') ? string(chop(a), "\\;") : a)
+        end
+    end
+    cmd = mux_cmd(argv...)
     cmd === nothing && return (false, no_mux())
     try
         out = read(pipeline(cmd; stderr = devnull), String)
@@ -149,6 +204,30 @@ function mux(args::AbstractString...)
     catch e
         (false, e isa ProcessFailedException ? "" : first(sprint(showerror, e), 80))
     end
+end
+
+"""
+    mux_line(args) -> String
+
+One command as a control-mode line: each argument as a word of tmux's own
+command syntax, which is not a shell's. An argument of the plainest characters
+goes as it is; any other is single-quoted, and inside single quotes tmux takes
+every character as itself - `#`, `\$`, `~`, `{`, `;` and `\\` included - with a
+quote written as `'\\''`, quoted strings running together into one word as in
+a shell. Measured on 3.5a: `'y;'` is `y;`, `'a\\;'` is `a\\;`, `'it'\\''s'` is
+`it's`, `'a#b'` is `a#b`.
+"""
+function mux_line(args::AbstractVector{<:AbstractString})
+    io = IOBuffer()
+    for (i, a) in enumerate(args)
+        i == 1 || print(io, ' ')
+        if !isempty(a) && all(ch -> isascii(ch) && (isletter(ch) || isdigit(ch) || ch in "-_./=@%+,:"), a)
+            print(io, a)
+        else
+            print(io, '\'', replace(String(a), "'" => "'\\''"), '\'')
+        end
+    end
+    String(take!(io))
 end
 
 """
@@ -251,20 +330,17 @@ identity. Each keyword becomes a `@`-prefixed user option on the session, which
 
     mux_tag!(name; worktree = path, kind = :agent, item = "julia#123")
 
-One `tmux` for all of them, the `set`s joined by `;`. A value that *ends* in
-`;` is a separator to tmux wherever it is - one command or several, `x;` was
-set as `x` - so that one is sent as `\\;`, which tmux reads as the character.
+One `mux` for all of them: one process joined by `;`, or one line each down
+the pipe. A value ending in `;` is the character, however it goes - see
+[`mux_spawn`](@ref).
 """
 function mux_tag!(name::AbstractString; kwargs...)
     isempty(kwargs) && return true
-    args = String[]
+    cmds = Vector{String}[]
     for (k, v) in pairs(kwargs)
-        isempty(args) || push!(args, ";")
-        s = string(v)
-        endswith(s, ';') && (s = string(chop(s), "\\;"))
-        append!(args, ("set", "-t", String(name), string("@", k), s))
+        push!(cmds, String["set", "-t", String(name), string("@", k), string(v)])
     end
-    first(mux(args...))
+    first(mux(cmds))
 end
 
 """
@@ -367,7 +443,7 @@ counts as somebody looking and which is gone on the next read (4 ms on 3.5a).
 For a host whose read mark and tmux's have to say the same thing: a mark that
 left the bell standing would leave the row unread whatever was pressed.
 """
-mux_seen!(name::AbstractString) = first(mux("-C", "attach", "-t=" * String(name)))
+mux_seen!(name::AbstractString) = first(mux_spawn("-C", "attach", "-t=" * String(name)))
 
 """
     mux_ring!(name) -> Bool
@@ -414,7 +490,8 @@ function mux_attach(name::AbstractString; suspend = f -> f())
     cmd = mux_cmd("attach", "-t=" * String(name))
     cmd === nothing && return false
     if !isempty(get(ENV, "TMUX", ""))
-        first(mux("switch-client", "-t=" * name)) && return true
+        # Spawned, never down the pipe: it moves the client that asked.
+        first(mux_spawn("switch-client", "-t=" * name)) && return true
         # A session on another server cannot be switched to; fall through and
         # try to attach, which will at least say why.
     end
