@@ -95,13 +95,14 @@ n = mux_name("julia", "master", "62841"; kind = :agent)
 mux_start(n, checkout, "claude")
 mux_tag!(n; worktree = checkout, kind = :agent, item = "julia#62841")
 
-mux_list()          # every session under the prefix, with its tags
+mux_list(["worktree", "kind", "item"])   # every session under the prefix, with those tags
 mux_attach(n; suspend = f -> give_the_terminal_away(f))
 ```
 
 A name is a *label*: the things worth naming a session after change under a
 session that has not moved. What a session **is** lives in its tags, which
-`mux_list` reads back as fields on each row.
+`mux_list` reads back on each row, in the order it was asked for them. Each row
+carries the server's `id` for the session too, which a rename does not change.
 
 `SCRUB_PREFIXES` is what an embedded program starts without. It defaults to the
 agent variables: run a host from inside an agent and every child would otherwise

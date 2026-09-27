@@ -131,13 +131,6 @@ program's to list or to kill. Set it once, to something short and yours.
 """
 const MUX_PREFIX = Ref("iframe")
 
-"""The tags [`mux_list`](@ref) reads back when it is not told which.
-
-A host tags its sessions with what they are to it, and lists them from more
-places than it wants to spell the list out in - so it is set once, beside
-[`MUX_PREFIX`](@ref), and every listing agrees on the fields of a row.
-"""
-const MUX_TAGS = Ref{Tuple{Vararg{Symbol}}}((:worktree, :kind, :item))
 
 """
     mux(args...) -> (ok, output)
@@ -257,13 +250,21 @@ identity. Each keyword becomes a `@`-prefixed user option on the session, which
 [`mux_list`](@ref) reads back.
 
     mux_tag!(name; worktree = path, kind = :agent, item = "julia#123")
+
+One `tmux` for all of them, the `set`s joined by `;`. A value that *ends* in
+`;` is a separator to tmux wherever it is - one command or several, `x;` was
+set as `x` - so that one is sent as `\\;`, which tmux reads as the character.
 """
 function mux_tag!(name::AbstractString; kwargs...)
-    ok = true
+    isempty(kwargs) && return true
+    args = String[]
     for (k, v) in pairs(kwargs)
-        ok &= first(mux("set", "-t", name, string("@", k), string(v)))
+        isempty(args) || push!(args, ";")
+        s = string(v)
+        endswith(s, ';') && (s = string(chop(s), "\\;"))
+        append!(args, ("set", "-t", String(name), string("@", k), s))
     end
-    ok
+    first(mux(args...))
 end
 
 """
@@ -286,18 +287,36 @@ function mux_sessions(; prefix::AbstractString = MUX_PREFIX[])
     filter(n -> startswith(n, p), split(strip(out), '\n'; keepempty = false))
 end
 
+"""One session, as [`mux_list`](@ref) reads it.
+
+`id` is the server's own for the session, `\$3`: it stays put through a
+rename, which the name does not, and is never reused while the server runs -
+a restart starts over at `\$0`, but a restart ends every session too. `tags`
+are the values of the user options `mux_list` was asked for, in that order,
+`""` for one never set; what they mean is the host's.
 """
-    mux_list(; tags, prefix) -> Vector{NamedTuple}
+struct MuxRow
+    name::String
+    id::String
+    command::String
+    attached::Bool
+    bell::Bool
+    tags::Vector{String}
+end
+
+"""
+    mux_list(tags = String[]; prefix) -> Vector{MuxRow}
 
 Every session this program owns, with what is running in each.
 
 One call, and only the active pane of each session: the list is a summary, and a
 session with three windows is still one line of it.
 
-`tags` names the user options set by [`mux_tag!`](@ref) to read back -
-[`MUX_TAGS`](@ref) unless said otherwise; each becomes a field of the row,
-alongside `name`, `command`, `attached` and `bell`. Rows come back sorted by
-name.
+`tags` names the user options set by [`mux_tag!`](@ref) to read back, as the
+host names them; their values come back in `tags`, in the same order, beside
+`name`, `id`, `command`, `attached` and `bell`. An argument and not a setting:
+the tags are the host's schema, and a host that keeps them in one place types
+its rows there. Rows come back sorted by name.
 
 `bell` is tmux's own unread mark: the child rang the terminal bell while nobody
 was attached, and nobody has attached since. Measured on 3.5a rather than read
@@ -314,24 +333,23 @@ The tags are matched here rather than with a tmux filter expression: a path can
 contain the characters a format string is made of, and a comma in a checkout's
 name would otherwise quietly match nothing.
 """
-function mux_list(; tags = MUX_TAGS[], prefix::AbstractString = MUX_PREFIX[])
-    tags = Tuple(Symbol(t) for t in tags)
-    fmt = join(vcat(["#{session_name}", "#{pane_current_command}", "#{session_attached}",
-                     "#{window_bell_flag}"],
-                    ["#{@$t}" for t in tags]), '\t')
+function mux_list(tags::AbstractVector{<:AbstractString} = String[];
+                  prefix::AbstractString = MUX_PREFIX[])
+    fmt = join(vcat(["#{session_name}", "#{session_id}", "#{pane_current_command}",
+                     "#{session_attached}", "#{window_bell_flag}"],
+                    String["#{@" * t * "}" for t in tags]), '\t')
     ok, out = mux("list-panes", "-a",
                   "-f", "#{&&:#{window_active},#{pane_active}}", "-F", fmt)
-    ok || return NamedTuple[]
-    n = 4 + length(tags)
+    ok || return MuxRow[]
+    n = 5 + length(tags)
     p = string(prefix, "-")
-    rows = NamedTuple[]
+    rows = MuxRow[]
     for line in split(out, '\n'; keepempty = false)
         f = split(line, '\t')
         length(f) == n || continue
         startswith(f[1], p) || continue
-        vals = (; (t => String(f[4 + i]) for (i, t) in enumerate(tags))...)
-        push!(rows, merge((name = String(f[1]), command = String(f[2]),
-                           attached = f[3] != "0", bell = f[4] == "1"), vals))
+        push!(rows, MuxRow(String(f[1]), String(f[2]), String(f[3]), f[4] != "0", f[5] == "1",
+                           String[String(x) for x in f[6:end]]))
     end
     sort!(rows; by = r -> r.name)
     rows

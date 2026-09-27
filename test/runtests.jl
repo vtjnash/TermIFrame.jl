@@ -81,7 +81,7 @@ end
         @test ok === false && occursin("no tmux", err)
         @test mux_alive("anything") === false
         @test mux_sessions() == String[]
-        @test mux_list() == NamedTuple[]
+        @test mux_list() == MuxRow[]
         @test iframe("anything", "t") === nothing
     end
 end
@@ -287,17 +287,20 @@ else
         # Tags are what a session *is*, as against what it is called, and they
         # come back on the row.
         @test mux_tag!(n; worktree = pwd(), kind = :shell, item = "demo#1")
-        r = only(filter(x -> x.name == n, mux_list()))
-        @test r.worktree == pwd() && r.kind == "shell" && r.item == "demo#1"
-        # The fields of a row are `MUX_TAGS`, set once by the host; a tag
-        # never set reads back empty rather than missing.
-        @test !hasproperty(r, :url)
-        MUX_TAGS[] = (:worktree, :kind, :item, :url)
-        r = only(filter(x -> x.name == n, mux_list()))
-        @test r.url == ""
-        @test mux_tag!(n; url = "https://example.com/1")
-        @test only(filter(x -> x.name == n, mux_list())).url == "https://example.com/1"
-        MUX_TAGS[] = (:worktree, :kind, :item)
+        tags = ["worktree", "kind", "item", "url"]
+        r = only(filter(x -> x.name == n, mux_list(tags)))
+        # In the order they were asked for; a tag never set reads back empty.
+        @test r.tags == [pwd(), "shell", "demo#1", ""]
+        @test startswith(r.id, '$')
+        # A value ending in `;` is a separator to tmux unless it is escaped.
+        @test mux_tag!(n; url = "https://example.com/1", item = "x;")
+        r = only(filter(x -> x.name == n, mux_list(tags)))
+        @test r.tags[3:4] == ["x;", "https://example.com/1"]
+        # The id is the session's, whatever it is called.
+        @test mux_rename(n, n * "-r")
+        @test only(filter(x -> x.name == n * "-r", mux_list())).id == r.id
+        @test mux_rename(n * "-r", n)
+        @test isempty(only(filter(x -> x.name == n, mux_list())).tags)
         # An open iframe *is* an attached client, which is what `attached`
         # reports - a host drawing a session and a person looking at it full
         # screen are the same thing to tmux.
