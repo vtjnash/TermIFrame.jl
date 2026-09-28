@@ -459,8 +459,29 @@ function mux_capture(c::MuxClient; escapes::Bool = true,
     ok ? lines : String[]
 end
 
+"""What tmux's copy mode is showing, read from its formats because it cannot
+be read any other way: `capture-pane` reads the pane's own grid, never the
+mode's screen.
+
+`scroll` is how far back the mode's view is, and the same thing
+`capture-pane -S` is told for a window that far back. `cursor` is a cell of
+that view, 0-based. `sel` is the selection's start and end as tmux keeps
+them - `(sx, sy, ex, ey)`, the end being where the cursor is dragging it -
+in lines of the whole grid, the oldest line of history 0, so a view row `r`
+is line `history - scroll + r`. `nothing` while there is none to draw, which
+includes one begun and still empty. `rect` and `vi` are the two things that
+change which cells it covers ([`copy_selected`](@ref)).
 """
-    mux_pane_state(c) -> (x, y, showing, mouse, history, alt)
+struct CopyMode
+    scroll::Int
+    cursor::Tuple{Int,Int}
+    sel::Union{Nothing,NTuple{4,Int}}
+    rect::Bool
+    vi::Bool
+end
+
+"""
+    mux_pane_state(c) -> (x, y, showing, mouse, history, alt, copy)
 
 What the pane knows that its screen does not say.
 
@@ -480,6 +501,10 @@ whether there is anything back there worth showing - a full-screen program's
 history is the wreckage of its redraws, which is why terminals stop offering
 scrollback while one is up.
 
+`copy` is the pane's copy mode, a [`CopyMode`](@ref), or `nothing` when it
+is not in one - including when it is in some other mode, which draws nothing
+this can read.
+
 The format is quoted and the target is not, which is the opposite way round
 from everywhere else and is not a preference: `#` starts a comment in tmux's
 command syntax, so an unquoted format is discarded and the default message
@@ -489,13 +514,56 @@ A quoted *target* meanwhile succeeds and matches nothing.
 function mux_pane_state(c::MuxClient)
     ok, lines = mux_ask(c, string("display-message -p -t =", c.name,
         ": '#{cursor_x},#{cursor_y},#{cursor_flag},#{mouse_any_flag}," *
-        "#{history_size},#{alternate_on}'"))
-    none = (0, 0, false, false, 0, false)
+        "#{history_size},#{alternate_on}," *
+        "#{pane_mode},#{scroll_position},#{copy_cursor_x},#{copy_cursor_y}," *
+        "#{selection_present},#{selection_start_x},#{selection_start_y}," *
+        "#{selection_end_x},#{selection_end_y},#{rectangle_toggle},#{mode-keys}'"))
+    none = (0, 0, false, false, 0, false, nothing)
     (ok && !isempty(lines)) || return none
     f = split(strip(lines[1]), ',')
-    length(f) == 6 || return none
-    (something(tryparse(Int, f[1]), 0), something(tryparse(Int, f[2]), 0),
-     f[3] == "1", f[4] == "1", something(tryparse(Int, f[5]), 0), f[6] == "1")
+    length(f) == 17 || return none
+    num(i) = something(tryparse(Int, f[i]), 0)
+    # `view-mode` is copy mode too - what `run-shell` output is shown in.
+    copy = f[7] in ("copy-mode", "view-mode") ?
+        CopyMode(num(8), (num(9), num(10)),
+                 f[11] == "1" ? (num(12), num(13), num(14), num(15)) : nothing,
+                 f[16] == "1", f[17] == "vi") : nothing
+    (num(1), num(2), f[3] == "1", f[4] == "1", num(5), f[6] == "1", copy)
+end
+
+"""
+    copy_selected(m, x, y) -> Bool
+
+Whether the cell at column `x` of grid line `y` is inside the selection
+[`CopyMode`](@ref) `m` shows. tmux's own `screen_check_selection`, the rule
+its copy mode is drawn by and copies by: emacs keys drop the bottom-right
+cell and vi keys keep it, whichever way the drag went, and a rectangle takes
+the columns between the two ends on every line between them.
+"""
+function copy_selected(m::CopyMode, x::Int, y::Int)
+    m.sel === nothing && return false
+    sx, sy, ex, ey = m.sel
+    if m.rect
+        min(sy, ey) <= y <= max(sy, ey) || return false
+        return min(sx, ex) <= x <= max(sx, ex)
+    end
+    if sy < ey
+        (sy <= y <= ey) || return false
+        y == sy && x < sx && return false
+        xx = m.vi ? ex : max(ex - 1, 0)
+        return !(y == ey && x > xx)
+    elseif sy > ey
+        (ey <= y <= sy) || return false
+        y == ey && x < ex && return false
+        return !(y == sy && (sx == 0 || x > (m.vi ? sx : sx - 1)))
+    else
+        y == sy || return false
+        if ex < sx
+            return ex <= x <= (m.vi ? sx : sx - 1)
+        else
+            return sx <= x <= (m.vi ? ex : max(ex - 1, 0))
+        end
+    end
 end
 
 """

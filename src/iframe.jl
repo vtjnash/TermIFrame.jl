@@ -60,6 +60,10 @@ mutable struct IFrame
                                    # the server could not say and it is held
     paste::Vector{UInt8}           # the paste so far
     held::Vector{UInt8}            # the start of a marker a read cut through
+    copy::Union{Nothing,CopyMode}  # tmux's copy mode, when the pane is in it
+    press::Union{Nothing,Tuple{Int,Int}}  # where a button went down, in the
+                                   # child's cells, until it comes up again
+    dragging::Bool                 # that press has become a selection
 end
 
 """
@@ -73,7 +77,8 @@ box, the footer, which keys are whose - answers the same way either way.
 """
 IFrame(name::AbstractString, title::AbstractString = "") =
     IFrame(String(name), String(title), nothing, String[], (0, 0), "", false,
-           (0, 0, false), false, 0, 0, false, false, nothing, UInt8[], UInt8[])
+           (0, 0, false), false, 0, 0, false, false, nothing, UInt8[], UInt8[],
+           nothing, nothing, false)
 
 """
     iframe(name, title) -> IFrame | Nothing
@@ -89,7 +94,8 @@ function iframe(name::AbstractString, title::AbstractString)
     c = mux_open(name)
     c === nothing && return nothing
     IFrame(String(name), String(title), c, String[], (0, 0), "", false,
-           (0, 0, false), false, 0, 0, false, false, nothing, UInt8[], UInt8[])
+           (0, 0, false), false, 0, 0, false, false, nothing, UInt8[], UInt8[],
+           nothing, nothing, false)
 end
 
 """
@@ -143,7 +149,11 @@ function iframe_sync!(f::IFrame, cols::Integer, rows::Integer)
     if box != f.sized
         mux_resize(f.client, box[1], box[2]) && (f.sized = box)
     end
-    lines = mux_capture(f.client; scroll = f.scroll, rows = last(f.sized))
+    # The state first, since copy mode says how far back to read: its view is
+    # the one on screen while it is up, whatever our own scroll was.
+    cx, cy, showing, mouse, hist, alt, copy = mux_pane_state(f.client)
+    lines = mux_capture(f.client; scroll = copy === nothing ? f.scroll : copy.scroll,
+                        rows = last(f.sized))
     if f.client.dead
         # With the reason: a client that timed out on a reply is not a session
         # that ended, and the two want different things done about them.
@@ -155,14 +165,60 @@ function iframe_sync!(f::IFrame, cols::Integer, rows::Integer)
     # Every row is closed off, or an unterminated colour would run out of the
     # content and into the border and padding.
     f.frame = [string(l, "\e[0m") for l in lines]
-    cx, cy, showing, mouse, hist, alt = mux_pane_state(f.client)
     f.cursor, f.wantsmouse = (cx, cy, showing), mouse
-    f.history, f.alt = hist, alt
+    f.history, f.alt, f.copy = hist, alt, copy
+    copy === nothing || paint_selection!(f.frame, copy, hist, first(f.sized))
     # The child rewriting its screen can shorten the history under a scroll that
     # was valid a moment ago, and the alternate screen going up ends the whole
     # question.
     f.scroll = alt ? 0 : clamp(f.scroll, 0, hist)
     true
+end
+
+"""
+    paint_selection!(rows, m, history, cols) -> rows
+
+Draw copy mode's selection over the rows read back, which is the only way it
+is ever seen: tmux draws it on the mode's screen, and `capture-pane` reads the
+pane's. `rows` are the view `m` is scrolled to; which cells are selected is
+[`copy_selected`](@ref)'s answer, the same rule tmux copies by.
+"""
+function paint_selection!(rows::Vector{String}, m::CopyMode, history::Int, cols::Int)
+    m.sel === nothing && return rows
+    for i in eachindex(rows)
+        y = history - m.scroll + i - 1
+        on = [copy_selected(m, x, y) for x in 0:cols-1]
+        any(on) && (rows[i] = reverse_cells(rows[i], on))
+    end
+    rows
+end
+
+"""`s` with the cells `on` says drawn in reverse video, and past the end of
+what it holds, the selected ones as reversed blanks - a line inside a
+selection is selected to the edge, as it is in tmux. The reverse goes back on
+after every escape in the run, since a reset there would end it."""
+function reverse_cells(s::AbstractString, on::Vector{Bool})
+    io, col, inside, i = IOBuffer(), 0, false, firstindex(s)
+    while i <= lastindex(s)
+        m = match(ESCAPE, SubString(s, i))
+        if m === nothing
+            want = get(on, col + 1, false)
+            want == inside || (write(io, want ? "\e[7m" : "\e[27m"); inside = want)
+            write(io, s[i])
+            col += textwidth(s[i]); i = nextind(s, i)
+        else
+            write(io, m.match)
+            inside && write(io, "\e[7m")
+            i += ncodeunits(m.match)
+        end
+    end
+    while col < length(on) && any(view(on, col+1:length(on)))
+        want = on[col + 1]
+        want == inside || (write(io, want ? "\e[7m" : "\e[27m"); inside = want)
+        write(io, ' '); col += 1
+    end
+    inside && write(io, "\e[27m")
+    String(take!(io))
 end
 
 """
@@ -178,7 +234,14 @@ cursor drawn over the border would be worse than none.
 """
 function iframe_cursor(f::IFrame, origin::NTuple{2,Int}, box::NTuple{2,Int})
     cx, cy, showing = f.cursor
-    (showing && f.client !== nothing && f.scroll == 0) || return nothing
+    if f.copy !== nothing
+        # Copy mode's cursor is the one that means anything while it is up,
+        # and it is always shown: it is where a selection's end is.
+        (cx, cy), showing = f.copy.cursor, true
+    elseif f.scroll > 0
+        showing = false
+    end
+    (showing && f.client !== nothing) || return nothing
     cols, rows = box
     (0 <= cx < cols && 0 <= cy < rows) || return nothing
     ox, oy = origin
@@ -194,7 +257,13 @@ among others. `nothing` otherwise, which is when the host should say what its
 own keys do; which keys those are is the host's to know.
 """
 function iframe_note(f::IFrame)
-    if f.scroll > 0
+    if f.copy !== nothing
+        # tmux draws `[n/m]` in the corner of copy mode; this is that, and
+        # the way out, since the keys are the mode's until it goes.
+        return string(f.name, " · copy mode",
+                      f.copy.scroll > 0 ? string(" · ", f.copy.scroll, " rows back of ", f.history) : "",
+                      " · q leaves")
+    elseif f.scroll > 0
         # Ahead of `status`, and it is the one thing that outranks it: a message
         # about something that just happened matters less than not knowing you
         # are looking at the past.
@@ -264,8 +333,16 @@ stop offering scrollback while one is up, and why a nested tmux gets nothing
 from this.
 """
 function iframe_wheel!(f::IFrame, b::Int)
-    f.alt && return false
     d = (b & ~0x1c)                    # shift, meta and ctrl are not the button
+    if f.copy !== nothing
+        # Copy mode has a view of its own, which is the one on screen: the
+        # wheel moves that, as it would in tmux.
+        (d == 64 || d == 65) || return false
+        copy_cmd(f, d == 64 ? "scroll-up" : "scroll-down", WHEEL_ROWS)
+        iframe_sync!(f, f.sized...)
+        return true
+    end
+    f.alt && return false
     d == 64 ? (f.scroll = clamp(f.scroll + WHEEL_ROWS, 0, f.history); true) :
     d == 65 ? (f.scroll = clamp(f.scroll - WHEEL_ROWS, 0, f.history); true) :
               false
@@ -314,17 +391,23 @@ function retarget_mouse(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
                     b, sx, sy = nums
                     cx, cy = sx - ox, sy - oy      # 0-based within the child
                     inside = 0 <= cx < cols && 0 <= cy < rows
-                    if f.wantsmouse && inside
+                    down = bytes[j] == UInt8('M')
+                    if f.wantsmouse && inside && !f.dragging
                         append!(out, codeunits(string("\e[<", b, ";", cx + 1, ";",
                                                       cy + 1, Char(bytes[j]))))
-                    elseif inside && bytes[j] == UInt8('M')
+                    elseif b & 64 != 0
                         # The child did not ask for the mouse, so a wheel over it
                         # is ours to answer - and this is the only scrollback an
                         # iframe has. Nothing else can offer one: `capture-pane`
                         # reads the grid, so a box showing a shell that has just
                         # printed a build log had no way at all to look back at
                         # it.
-                        iframe_wheel!(f, b)
+                        inside && down && iframe_wheel!(f, b)
+                    elseif inside || f.press !== nothing
+                        # And a drag over it is tmux's copy mode - outside the
+                        # box too once one has begun, since that is where a
+                        # drag goes to scroll and a button comes up.
+                        iframe_drag!(f, b, cx, cy, down, box)
                     end
                     i = j + 1
                     continue
@@ -334,6 +417,123 @@ function retarget_mouse(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
         push!(out, bytes[i]); i += 1
     end
     out
+end
+
+"""
+    iframe_drag!(f, b, x, y, down, box)
+
+A left-button drag over a child that did not ask for the mouse, as tmux's copy
+mode: what tmux would do with it on a terminal of its own, done through the
+mode's commands, since a control client has no way to hand tmux the drag
+itself. `(x, y)` is the child's cell, 0-based, and may be outside the box once
+a drag has begun. `down` is false for the button coming up.
+
+A press alone is nothing, as in tmux: copy mode starts on the first motion,
+at the cell pressed, and each motion after moves the selection's end there -
+past the top or the bottom it scrolls a row first. The button coming up
+copies it, into tmux's buffers and onto the terminal's clipboard, and leaves
+the mode, and the view stays where the mode had got to.
+
+What is copied is tmux's to say, and that is the reason for all of this: it
+knows a wrapped line from two, and joins the one.
+"""
+function iframe_drag!(f::IFrame, b::Int, x::Int, y::Int, down::Bool,
+                      box::NTuple{2,Int})
+    f.client === nothing && return
+    btn = b & ~0x1c
+    cols, rows = box
+    if !down
+        f.dragging && copy_finish!(f, box)
+        f.press, f.dragging = nothing, false
+    elseif btn == 0
+        f.press, f.dragging = (0 <= x < cols && 0 <= y < rows) ? (x, y) : nothing, false
+    elseif btn == 32 && f.press !== nothing
+        if !f.dragging
+            if !copy_cmd(f, "")
+                f.press = nothing
+                return
+            end
+            f.dragging = true
+            f.scroll > 0 && copy_cmd(f, "scroll-up", f.scroll)
+            copy_goto(f, f.press...)
+            copy_cmd(f, "begin-selection")
+        end
+        if y < 0 || y >= rows
+            copy_cmd(f, y < 0 ? "scroll-up" : "scroll-down")
+            # The row the cursor goes to is a new one, and its width is what
+            # a column is clamped to.
+            iframe_sync!(f, box...)
+        end
+        copy_goto(f, clamp(x, 0, cols - 1), clamp(y, 0, rows - 1))
+        iframe_sync!(f, box...)
+    end
+    nothing
+end
+
+"""One copy-mode command to the pane: `send -X`, repeated `n` times, or with
+an empty `cmd` the entering of the mode itself. One to an ask, never a `;`
+list: each command in a list is answered on its own, and the answers are
+matched to the asking by position."""
+function copy_cmd(f::IFrame, cmd::AbstractString, n::Int = 1)
+    f.client === nothing && return false
+    n > 0 || return true
+    t = string(" -t =", f.name, ":")
+    first(mux_ask(f.client, isempty(cmd) ? string("copy-mode", t) :
+                  string("send -X", n > 1 ? string(" -N ", n) : "", t, " ", cmd)))
+end
+
+"""Put copy mode's cursor on cell `(x, y)` of its view.
+
+There is no command for a cell, so it is the top row, down `y`, and then
+across. Across is from wherever that left the cursor, which is asked: a step
+down goes to a remembered column that `top-line` does not reset when the top
+row is empty, and `start-of-line` on the second row of a wrapped line goes to
+where the line starts, a row up. It is counted in characters, since a step
+skips the padding of a wide one, and clamped to the line's end, since one step
+past it wraps to the next row.
+"""
+function copy_goto(f::IFrame, x::Int, y::Int)
+    copy_cmd(f, "top-line")
+    copy_cmd(f, "cursor-down", y)
+    ok, st = mux_ask(f.client, string("display-message -p -t =", f.name, ": '#{copy_cursor_x}'"))
+    at = ok && !isempty(st) ? something(tryparse(Int, strip(st[1])), 0) : 0
+    line = y + 1 <= length(f.frame) ? rstrip(astrip(f.frame[y + 1])) : ""
+    d = chars_before(line, x) - chars_before(line, at)
+    d > 0 ? copy_cmd(f, "cursor-right", d) : copy_cmd(f, "cursor-left", -d)
+end
+
+"""How many characters of `line` start before column `x`: the steps from its
+start to the cell at `x`, or to its end when `x` is past it."""
+function chars_before(line::AbstractString, x::Int)
+    k, col = 0, 0
+    for c in line
+        col >= x && break
+        k += 1; col += textwidth(c)
+    end
+    k
+end
+
+"""The button coming up: copy what is selected and leave the mode. The text
+goes on the terminal's clipboard the way a child's own OSC 52 does, relayed
+at the next sync - a control client has no terminal for tmux's
+`set-clipboard` to reach."""
+function copy_finish!(f::IFrame, box::NTuple{2,Int})
+    c = f.client
+    c === nothing && return
+    t = string(" -t =", f.name, ":")
+    ok, st = mux_ask(c, string("display-message -p", t, " '#{selection_present},#{scroll_position}'"))
+    fs = ok && !isempty(st) ? split(st[1], ',') : String[]
+    present = length(fs) == 2 && fs[1] == "1"
+    back = length(fs) == 2 ? something(tryparse(Int, fs[2]), 0) : 0
+    if present && copy_cmd(f, "copy-selection-and-cancel")
+        ok, buf = mux_ask(c, "show-buffer")
+        ok && push!(c.relay, string(OSC52, "c;", base64encode(join(buf, "\n")), "\a"))
+    else
+        copy_cmd(f, "cancel")
+    end
+    # Where the mode had got to is where the view stays.
+    f.scroll = back
+    iframe_sync!(f, box...)
 end
 
 const PASTE_START = b"\e[200~"

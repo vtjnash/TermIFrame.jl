@@ -57,6 +57,7 @@ tmux binary in to get it.
 module TermIFrame
 
 import tmux_jll
+using Base64: base64encode
 # The escape-aware measuring, which is `TermInput`'s and re-exported below: a
 # host laying an iframe out beside something else needs it as much as this does.
 using TermInput
@@ -66,13 +67,13 @@ export mux_bin, mux_cmd, bundled_tmux, no_mux, mux_name, mux, mux_spawn, mux_lin
        mux_rename, mux_sessions, mux_list, MuxRow, mux_seen!, mux_ring!, mux_attach, standalone,
        MUX_ENV
 export MuxProto, mux_feed!, mux_unescape, passthrough
-export MuxClient, mux_open, mux_wait, mux_relay!, mux_sync!, mux_ask, mux_capture, mux_pane_state, mux_paste, mux_brackets,
+export MuxClient, mux_open, mux_wait, mux_relay!, mux_sync!, mux_ask, mux_capture, mux_pane_state, CopyMode, copy_selected, mux_paste, mux_brackets,
        mux_resize, mux_keys, mux_close,
        MUX_PIPE, MUX_BELLS, mux_pipe, mux_pipe_open, mux_pipe_close, pipe_session
 export bordered
 export IFrame, iframe, iframe_box, iframe_origin, iframe_sync!, iframe_cursor,
        iframe_note, iframe_rows, iframe_input!, iframe_send!, iframe_close!,
-       iframe_wheel!, retarget_mouse,
+       iframe_wheel!, iframe_drag!, retarget_mouse,
        IFRAME_PREFIX, WHEEL_ROWS
 
 include("tmux.jl")

@@ -7,6 +7,7 @@ version = "0.1.0"
 # the theme arrive through `TermInput`, which is also where the measuring under
 # them went.
 [deps]
+Base64 = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
 TermInput = "e53b28ee-00f8-475a-85b8-1918fdda0ee8"
 tmux_jll = "558ad2b7-f92e-50c4-8d35-b0432ac1efd4"
 
@@ -17,6 +18,7 @@ tmux_jll = "558ad2b7-f92e-50c4-8d35-b0432ac1efd4"
 TermInput = {path = "../TermInput.jl"}
 
 [compat]
+Base64 = "1"
 TermInput = "0.1"
 tmux_jll = "3.5"
 julia = "1.10"

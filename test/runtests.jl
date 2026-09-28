@@ -456,8 +456,9 @@ else
         # are the facts that rests on, measured on 3.5a.
         n = mux_name(P, "test", "copymode")
         mux_kill(n)
-        # 500 numbered lines, one line that wraps at 40 columns, and `tail`.
-        mux_start(n, pwd(), "sh -c 'seq 1 500; seq -s x 1 30; echo tail; sh'")
+        # 500 numbered lines, one line that wraps at 40 columns, and `tail` -
+        # then nothing, so that once `tail` is on screen the history is final.
+        mux_start(n, pwd(), "sh -c 'seq 1 500; seq -s x 1 30; echo tail; sleep 120'")
         f = iframe(n, "sh")
         box = (40, 10)
         for _ in 1:40
@@ -529,7 +530,7 @@ else
         # `cursor-right` stops at a line's end and one more step wraps it to
         # the next row, so a column past the end has to be clamped to the
         # line's width before it becomes a count: `tail` is four wide, and
-        # four steps land on its end where five land on the prompt below.
+        # four steps land on its end where five land on the empty row below.
         @test first(mux_ask(c, "copy-mode" * t))
         @test x!("top-line") && x!("cursor-down", 8) && x!("cursor-right", 4)
         s = state()
@@ -556,6 +557,110 @@ else
             @test only(last(mux_ask(c, "show-buffer"))) == want
             @test first(mux_ask(c, "delete-buffer"))
         end
+
+        iframe_close!(f)
+        mux_kill(n)
+    end
+
+    @testset "a drag over a child that ignores the mouse is tmux's copy mode" begin
+        n = mux_name(P, "test", "drag")
+        mux_kill(n)
+        mux_start(n, pwd(), "sh -c 'seq 1 500; seq -s x 1 30; echo tail; sleep 120'")
+        f = iframe(n, "sh")
+        box, origin = (40, 10), iframe_origin(1, 1)
+        for _ in 1:40
+            iframe_sync!(f, box...)
+            f.history > 100 && any(startswith("tail"), astrip.(f.frame)) && break
+            sleep(0.25)
+        end
+        c = f.client
+        @test first(mux_ask(c, string("set -w -t =", n, ": mode-keys emacs")))
+        @test f.wantsmouse === false
+        rows, hist = astrip.(f.frame), f.history
+        # A report at the child's cell `(x, y)`, 0-based.
+        sgr(b, x, y, fin = 'M') = collect(codeunits(string("\e[<", b, ";",
+            origin[1] + x, ";", origin[2] + y, fin)))
+        # What the sync prints - the clipboard - caught rather than sent to
+        # the terminal running the tests.
+        function caught(g)
+            path, io = mktemp()
+            redirect_stdout(g, io)
+            close(io)
+            s = read(path, String)
+            rm(path)
+            s
+        end
+
+        # A press alone is nothing, as in tmux, and a release after it copies
+        # nothing either.
+        out = caught(() -> begin
+            @test iframe_input!(f, sgr(0, 2, 5), origin, box) === :ok
+            @test f.copy === nothing && f.press == (2, 5)
+            iframe_input!(f, sgr(0, 2, 5, 'm'), origin, box)
+        end)
+        @test f.copy === nothing && f.press === nothing
+        @test !occursin("\e]52;", out)
+
+        # The first motion is the mode, begun at the cell pressed: from `0` of
+        # `500` to column 4 of the wrapped line's second row.
+        iframe_input!(f, sgr(0, 2, 5), origin, box)
+        iframe_input!(f, sgr(32, 4, 7), origin, box)
+        @test f.copy !== nothing && f.dragging
+        @test f.copy.sel == (2, hist + 5, 4, hist + 7)
+        # Drawn here, since tmux draws it nowhere this can read: `500` from its
+        # `0`, the first row of the wrapped line whole, and its second up to
+        # column 4 - emacs keys, so not including it.
+        @test occursin("50\e[7m0", f.frame[6])
+        @test startswith(f.frame[7], "\e[7m")
+        @test occursin("\e[7m7x18\e[27mx", f.frame[8])
+        @test astrip(f.frame[8]) == rows[8]           # painted, not changed
+        # The real cursor is copy mode's, and the note says where you are.
+        @test iframe_cursor(f, origin, box) == (origin[2] + 7, origin[1] + 4)
+        @test occursin("copy mode", iframe_note(f))
+
+        # Up comes the button: copied, onto the clipboard, and the mode gone.
+        out = caught(() -> iframe_input!(f, sgr(0, 4, 7, 'm'), origin, box))
+        want = "0\n" * rows[7] * "7x18"
+        @test occursin(string("\e]52;c;", TermIFrame.base64encode(want), "\a"), out)
+        @test join(last(mux_ask(c, "show-buffer")), "\n") == want   # tmux's buffer too
+        @test first(mux_ask(c, "delete-buffer"))
+        @test f.copy === nothing && !f.dragging && f.scroll == 0
+
+        # A column past a line's end is its end, not the next row: `tail` from
+        # its `i` to column 30 copies `il`.
+        out = caught(() -> begin
+            iframe_input!(f, sgr(0, 2, 8), origin, box)
+            iframe_input!(f, sgr(32, 30, 8), origin, box)
+            @test f.copy.sel == (2, hist + 8, 4, hist + 8)
+            iframe_input!(f, sgr(0, 30, 8, 'm'), origin, box)
+        end)
+        @test occursin(TermIFrame.base64encode("il"), out)
+        @test first(mux_ask(c, "delete-buffer"))
+
+        # Dragged past the top, the view scrolls a row under it; the wheel
+        # moves the mode's view while it is up; and the view stays where the
+        # mode had got to once it has gone.
+        out = caught(() -> begin
+            iframe_input!(f, sgr(0, 0, 3), origin, box)
+            iframe_input!(f, sgr(32, 0, -1), origin, box)
+            @test f.copy.scroll == 1
+            @test f.copy.sel == (0, hist + 3, 0, hist - 1)
+            iframe_input!(f, sgr(64, 5, 5), origin, box)
+            @test f.copy.scroll == 1 + WHEEL_ROWS
+            iframe_input!(f, sgr(0, 0, -1, 'm'), origin, box)
+        end)
+        @test f.copy === nothing && f.scroll == 1 + WHEEL_ROWS
+        @test occursin("\e]52;", out)
+        @test first(mux_ask(c, "delete-buffer"))
+        # Typing is back to the live screen, as it always was.
+        iframe_input!(f, UInt8[UInt8(' ')], origin, box)
+        @test f.scroll == 0
+
+        # A child that asked for the mouse still gets the drag, unchanged.
+        f.wantsmouse = true
+        @test retarget_mouse(f, sgr(32, 4, 7), origin, box) ==
+              collect(codeunits("\e[<32;5;8M"))
+        @test f.copy === nothing
 
         iframe_close!(f)
         mux_kill(n)

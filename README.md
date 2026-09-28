@@ -59,6 +59,13 @@ calls `iframe_input!` again to send on what was read after it.
   box showing a shell that has just printed a build log had no way to look back
   at it. A wheel report the child did not ask for scrolls the host's window over
   the pane's own history instead.
+* **A drag that selects, as tmux's own does.** Over a child that did not ask for
+  the mouse, a drag is tmux's copy mode - tmux is what knows a wrapped line from
+  two, and joins the one when it copies. A control client cannot hand tmux the
+  drag and `capture-pane` never reads the mode's screen, so the mode is driven
+  by its commands and drawn here from its formats (`CopyMode`,
+  `copy_selected`); the copy goes into tmux's buffers and onto the terminal's
+  clipboard. Copy mode the pane was already in is drawn the same way.
 * **Mouse reports that land where they should.** A report arrives in screen
   coordinates and the child owns a box inside that screen; forwarded unchanged,
   a click lands somewhere else, and usually plausibly so. And a child that never
