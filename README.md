@@ -36,7 +36,11 @@ iframe_sync!(f, cols, rows)              # size it, read its screen back
 for line in iframe_rows(f, w, h)         # `h` rows of exactly `w` columns
     println(line)
 end
-iframe_input!(f, bytes, iframe_origin(x, y), (cols, rows))
+r = iframe_input!(f, bytes, iframe_origin(x, y), (cols, rows))
+while r isa UInt8                         # the key typed after ^]
+    your_key!(f, r)                      # leave, kill, full screen: yours
+    r = iframe_input!(f, UInt8[], iframe_origin(x, y), (cols, rows))
+end
 ```
 
 The host hands in no functions. It waits on the client for output and reads what
@@ -125,7 +129,7 @@ opens one control-mode client for all of them:
 
 ```julia
 mux_pipe_open("wl") # once a session under wl- exists
-mux(...)            # every command goes down it while it is open, ~0.03 ms
+mux(...)            # every command goes down it while it is open, 0.04-0.16 ms
 mux_pipe_close()    # when the last session has ended, and on exit
 ```
 

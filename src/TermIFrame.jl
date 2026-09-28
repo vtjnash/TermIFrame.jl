@@ -27,7 +27,9 @@ look away.
     cols, rows = iframe_box(w, h)          # the child's size inside your box
     iframe_sync!(f, cols, rows)            # size it, read its screen
     rows_to_print = iframe_rows(f, w, h)   # `h` rows of exactly `w` columns
-    iframe_input!(f, bytes, iframe_origin(x, y), (cols, rows))
+    r = iframe_input!(f, bytes, iframe_origin(x, y), (cols, rows))
+    # `r` is `:ok`, `:gone`, or the key typed after `^]` - the host's to act
+    # on, before it calls again with no bytes to send on the rest
 
 The host owns the layout: nothing here asks `displaysize`, because an iframe
 drawn beside something else is the case that matters. What it owns instead is

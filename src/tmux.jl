@@ -134,8 +134,8 @@ Run one multiplexer command, or several in order - stopping at the first that
 fails - with the output of all of them.
 
 Down the command pipe while one is open ([`mux_pipe_open`](@ref)), and as a
-`tmux` process otherwise: a process is ~3 ms, the same command on the pipe a
-few hundredths of one. Which one ran is not the caller's concern; what each
+`tmux` process otherwise: a process is ~3 ms, the same command on the pipe
+0.04 to 0.16 ms (3.5a). Which one ran is not the caller's concern; what each
 needs quoting against is, and differs, so it is done here -
 [`mux_line`](@ref) for the pipe and [`mux_spawn`](@ref) for a process.
 A command with a newline in it cannot be written as a control line and is
