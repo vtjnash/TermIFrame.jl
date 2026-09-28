@@ -97,12 +97,11 @@ Naming, starting, tagging and listing are separate from drawing, which is what
 lets a session outlive every client that has looked at it.
 
 ```julia
-MUX_PREFIX[] = "wl"                       # the sessions this program owns
-n = mux_name("julia", "master", "62841"; kind = :agent)
+n = mux_name("wl", "julia", "master", "62841"; kind = :agent)   # wl-julia-master-62841-agent
 mux_start(n, checkout, "claude")
 mux_tag!(n; worktree = checkout, kind = :agent, item = "julia#62841")
 
-mux_list(["worktree", "kind", "item"])   # every session under the prefix, with those tags
+mux_list("wl", ["worktree", "kind", "item"])   # every session under wl-, with those tags
 mux_attach(n; suspend = f -> give_the_terminal_away(f))
 ```
 
@@ -111,11 +110,10 @@ session that has not moved. What a session **is** lives in its tags, which
 `mux_list` reads back on each row, in the order it was asked for them. Each row
 carries the server's `id` for the session too, which a rename does not change.
 
-`SCRUB_PREFIXES` is what an embedded program starts without. It defaults to the
-agent variables: run a host from inside an agent and every child would otherwise
-inherit that agent's session and its control channel, and a program started in
-an iframe is meant to be its own session, answerable to the person watching it
-and to nobody else.
+The prefix is the first part of a name and the argument every listing takes:
+it is what a host lists its own sessions by, so that one started by hand is not
+its to list or kill. Nothing holds a host to one - two prefixes are two sets of
+sessions, listed apart.
 
 ## The command pipe
 
@@ -124,7 +122,7 @@ issues many - a browser listing its sessions, tagging them, marking them read -
 opens one control-mode client for all of them:
 
 ```julia
-mux_pipe_open()     # once a session of ours exists
+mux_pipe_open("wl") # once a session under wl- exists
 mux(...)            # every command goes down it while it is open, ~0.03 ms
 mux_pipe_close()    # when the last session has ended, and on exit
 ```
@@ -132,7 +130,7 @@ mux_pipe_close()    # when the last session has ended, and on exit
 A control client has to be attached to stay open, and attaching to a session
 clears its bell, so the pipe is parked on a hidden session of its own,
 `_<prefix>-ctl-<pid>`, which ends with it. It also subscribes to the bells of
-every session under the prefix: `mux_wait` on the pipe returns when one rings
+every session under that prefix: `mux_wait` on the pipe returns when one rings
 or is heard, or when a session starts or ends (`sessions` on the client), so a
 host hears a bell without listing the sessions on a clock. `switch-client` and
 the attach behind `mux_seen!` are always spawned: they are about the client
@@ -142,9 +140,7 @@ that asks.
 
 | | |
 |---|---|
-| `MUX_PREFIX[]` | the prefix naming the sessions this host owns; only these are listed or killed, and the pipe's hidden session is named after it |
 | `MUX_ENV[]` | the environment variable naming a tmux binary to use instead of the bundled `tmux_jll` one |
-| `SCRUB_PREFIXES[]` | environment-variable prefixes an embedded program starts without |
 | `IFRAME_PREFIX` | the prefix byte, `^]` |
 | `IFRAME_KEYS` | the bytes after it that are the package's, and a host must not shadow |
 

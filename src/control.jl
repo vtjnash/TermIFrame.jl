@@ -610,8 +610,9 @@ end
 # of its own, named outside the prefix, where a session beside it was left
 # `attached=0` with its bell standing (measured on 3.5a).
 #
-# One per process, which for a host is one per browser: a global, as the
-# prefix is. Separate from any iframe's client - a pane's client ends with its
+# One per process, which for a host is one per browser: a global. Opened for
+# one prefix, whose bells it hears; a process with sessions under two prefixes
+# has not needed a pipe for each yet. Separate from any iframe's client - a pane's client ends with its
 # session, and one client for both would `switch-client` from session to
 # session, clearing each bell it passed.
 
@@ -631,24 +632,26 @@ end
 """The hidden session a process parks its pipe on: `_<prefix>-ctl-<pid>`,
 outside the prefix, so that [`mux_sessions`](@ref) and [`mux_list`](@ref) do
 not count it."""
-pipe_session(pid::Integer = getpid()) = string("_", MUX_PREFIX[], "-ctl-", pid)
+pipe_session(prefix::AbstractString, pid::Integer = getpid()) =
+    string("_", prefix, "-ctl-", pid)
 
-"""The subscription the pipe asks for: which sessions of ours have their bell
+"""The subscription the pipe asks for: which sessions under `prefix` have their bell
 standing, as their ids. tmux checks it once a second and says
 `%subscription-changed` when the answer differs, which is how a host hears a
 bell without listing the sessions on a clock. The `S:` loop is over every
 session on the server, where a subscription is otherwise about the session the
 client is attached to - the hidden one."""
-bell_format(prefix::AbstractString = MUX_PREFIX[]) =
+bell_format(prefix::AbstractString) =
     string("#{S:#{?#{&&:#{m:", prefix, "-*,#{session_name}},#{window_bell_flag}},#{session_id} ,}}")
 
 """The name the bell subscription is kept under in the pipe's `subs`."""
 const MUX_BELLS = "bells"
 
 """
-    mux_pipe_open() -> MuxClient | Nothing
+    mux_pipe_open(prefix) -> MuxClient | Nothing
 
-Open the command pipe, or answer the one already open.
+Open the command pipe for the sessions under `prefix`, or answer the one
+already open - which is one per process, whatever prefix it was opened for.
 
 A server is started by the `new-session` under it if there is none, so a host
 opens this only once there is a session of its own to talk about - found at
@@ -664,24 +667,24 @@ client is on it - set on a session with nobody attached it ends it on the spot
 exits and the session goes. A host that died between the two leaves one behind,
 and the next to open a pipe ends it, since it would keep the server up.
 
-The bell subscription ([`bell_format`](@ref)) is asked for here; `bells` on the
+The bell subscription ([`bell_format`](@ref)), for `prefix`, is asked for here; `bells` on the
 client says whether it took, which a server before 3.2 would refuse. Answers
 `nothing` where there is no tmux or the attach failed, and [`mux`](@ref) goes on
 spawning.
 """
-function mux_pipe_open()
+function mux_pipe_open(prefix::AbstractString)
     c = mux_pipe()
     c === nothing || return c
     MUX_PIPE[] = nothing
     mux_bin() === nothing && return nothing
-    mux_pipe_sweep()
-    name = pipe_session()
+    mux_pipe_sweep(prefix)
+    name = pipe_session(prefix)
     first(mux_spawn("new-session", "-d", "-s", name, "cat")) || return nothing
     c = mux_open(name; flags = "no-output,ignore-size")
     c === nothing && (mux_spawn("kill-session", "-t=" * name); return nothing)
     mux_ask(c, mux_line(["set", "-t", name, "destroy-unattached", "on"]))
     c.bells = first(mux_ask(c, mux_line(["refresh-client", "-B",
-                                         string(MUX_BELLS, "::", bell_format())])))
+                                         string(MUX_BELLS, "::", bell_format(prefix))])))
     MUX_PIPE[] = c
     c
 end
@@ -689,10 +692,10 @@ end
 """End the hidden sessions of pipes whose process is gone: a host that died
 after starting one and before its client was on it. Not our own, and not one
 whose name does not end in a pid."""
-function mux_pipe_sweep()
+function mux_pipe_sweep(prefix::AbstractString)
     ok, out = mux_spawn("list-sessions", "-F", "#{session_name}")
     ok || return
-    p = string("_", MUX_PREFIX[], "-ctl-")
+    p = string("_", prefix, "-ctl-")
     for n in split(out, '\n'; keepempty = false)
         startswith(n, p) || continue
         pid = tryparse(Int, n[ncodeunits(p)+1:end])

@@ -94,9 +94,12 @@ function mux_cmd(args::AbstractString...)
 end
 
 """
-    mux_name(parts...; kind = :shell, prefix = "wl") -> String
+    mux_name(prefix, parts...; kind = :shell) -> String
 
-What to *call* a session, out of the parts that say which one it is.
+What to *call* a session, out of the parts that say which one it is: `prefix`
+first, which is what a host lists its own by ([`mux_sessions`](@ref),
+[`mux_list`](@ref)) - a session someone started by hand is not a host's to list
+or to kill.
 
 This is a label and not an identity: the things worth naming a session after -
 the branch it is on, what was in view when it was opened - change under a
@@ -112,8 +115,7 @@ name it was asked for. Doing the same substitution here means the name held on
 this side is the name the server holds. `/` it leaves alone, which is what lets
 a branch keep its owner prefix.
 """
-function mux_name(parts::AbstractString...; kind::Symbol = :shell,
-                  prefix::AbstractString = MUX_PREFIX[])
+function mux_name(prefix::AbstractString, parts::AbstractString...; kind::Symbol = :shell)
     clean(x) = replace(String(x), '.' => '_', ':' => '_')
     out = [String(prefix)]
     for p in parts
@@ -122,14 +124,6 @@ function mux_name(parts::AbstractString...; kind::Symbol = :shell,
     kind === :shell || push!(out, String(kind))
     join(out, '-')
 end
-
-"""The prefix every session this program owns is named with.
-
-It is what makes a session *ours*: [`mux_sessions`](@ref) and [`mux_list`](@ref)
-list only these, because a session someone started by hand is not a host
-program's to list or to kill. Set it once, to something short and yours.
-"""
-const MUX_PREFIX = Ref("iframe")
 
 
 """
@@ -241,7 +235,7 @@ for one thing would otherwise answer for another whose name extends it.
 mux_alive(name::AbstractString) = first(mux("has-session", "-t=" * name))
 
 """
-    mux_start(name, dir, cmd; scrub = SCRUB_PREFIXES[], set = []) -> (ok, err)
+    mux_start(name, dir, cmd; set = []) -> (ok, err)
 
 Start a detached session running `cmd` in `dir`, unless it is already up.
 
@@ -249,59 +243,35 @@ Detached is what makes this reusable: the session exists whether or not anyone
 is looking at it, so attaching is a separate decision made later, possibly
 several times.
 
-`scrub` and `set` are [`standalone`](@ref)'s: what the program is not to
-inherit, and what it is to be handed instead.
+`set` is [`standalone`](@ref)'s: what the program is to be handed, whatever
+the server holds.
 """
 function mux_start(name::AbstractString, dir::AbstractString, cmd::AbstractString;
-                   scrub = SCRUB_PREFIXES[], set = Pair{String,String}[])
+                   set = Pair{String,String}[])
     mux_alive(name) && return (true, "")
     # One trailing argument, so tmux hands the whole thing to a shell. Passing
     # it pre-split would make the caller quote for a shell it cannot see.
-    ok, err = mux("new-session", "-d", "-s", name, "-c", dir, standalone(cmd; scrub, set))
+    ok, err = mux("new-session", "-d", "-s", name, "-c", dir, standalone(cmd; set))
     ok ? (true, "") : (false, isempty(err) ? "could not start session" : err)
 end
 
-"""Environment-variable prefixes to unset in an embedded program's environment.
-
-Defaults to the agent variables, which is the case this was written for: run a
-host from inside an agent and every child inherits that agent's session -
-`CLAUDE_CODE_CHILD_SESSION`, which silently turns the child's transcript saving
-off, and `CLAUDE_CODE_MESSAGING_SOCKET` and its token, which are the parent's
-control channel. A program started in an iframe is meant to be its own session,
-answerable to the person watching it and to nobody else, and a shell has no more
-business holding another session's credentials.
-
-Set to `String[]` to inherit everything.
 """
-const SCRUB_PREFIXES = Ref(["CLAUDE"])
+    standalone(cmd; set) -> String
 
+Wrap `cmd` so its child starts with `set`, `name => value` pairs, whatever the
+server holds.
+
+`env` at exec, because the tmux *server* keeps the environment it was started
+with and hands every session a copy: that copy is the one thing a session
+command cannot change, and a variable set on the *session* reaches only what is
+started in it afterwards, never the program already running. The values are
+single-quoted for the shell tmux runs the command through, so they are handed
+over as they are, not expanded - a host that wants `\$PATH` in one has to put
+the actual path there.
 """
-    standalone(cmd; scrub, set) -> String
-
-Wrap `cmd` so its child starts as if from a plain terminal.
-
-The names are read from this process rather than listed, so whatever a future
-version inherits is scrubbed too, and nothing is scrubbed that was not actually
-there. `env -u` does it at exec, which is the only place that certainly
-applies: the tmux *server* keeps the environment it was started with, and every
-session it is asked for later would otherwise be handed a copy.
-
-`set` is the other direction, `name => value` pairs the child is to start
-with, whatever the server holds. The same `env` does both, and for the same
-reason: the server's copy of the environment is the one thing a session
-command cannot change, and a variable set on the *session* reaches only what
-is started in it afterwards, never the program already running. The values
-are single-quoted for the shell tmux runs the command through, so they are
-handed over as they are, not expanded - a host that wants `\$PATH` in one has
-to put the actual path there.
-"""
-function standalone(cmd::AbstractString; scrub = SCRUB_PREFIXES[],
-                    set = Pair{String,String}[])
-    vars = isempty(scrub) ? String[] :
-           sort!([k for k in keys(ENV) if any(p -> startswith(k, p), scrub)])
-    isempty(vars) && isempty(set) && return String(cmd)
+function standalone(cmd::AbstractString; set = Pair{String,String}[])
+    isempty(set) && return String(cmd)
     words = ["env"]
-    append!(words, ("-u " * v for v in vars))
     append!(words, (string(k, "=", shq(v)) for (k, v) in set))
     push!(words, String(cmd))
     join(words, ' ')
@@ -352,11 +322,12 @@ mux_rename(old::AbstractString, new::AbstractString) =
     old == new || first(mux("rename-session", "-t=" * old, String(new)))
 
 """
-    mux_sessions(; prefix) -> Vector{String}
+    mux_sessions(prefix) -> Vector{String}
 
-Every session this program owns, by name.
+Every session named under `prefix` - `prefix-...`, as [`mux_name`](@ref) makes
+them - by name.
 """
-function mux_sessions(; prefix::AbstractString = MUX_PREFIX[])
+function mux_sessions(prefix::AbstractString)
     ok, out = mux("list-sessions", "-F", "#{session_name}")
     ok || return String[]
     p = string(prefix, "-")
@@ -381,9 +352,9 @@ struct MuxRow
 end
 
 """
-    mux_list(tags = String[]; prefix) -> Vector{MuxRow}
+    mux_list(prefix, tags = String[]) -> Vector{MuxRow}
 
-Every session this program owns, with what is running in each.
+Every session named under `prefix`, with what is running in each.
 
 One call, and only the active pane of each session: the list is a summary, and a
 session with three windows is still one line of it.
@@ -409,8 +380,8 @@ The tags are matched here rather than with a tmux filter expression: a path can
 contain the characters a format string is made of, and a comma in a checkout's
 name would otherwise quietly match nothing.
 """
-function mux_list(tags::AbstractVector{<:AbstractString} = String[];
-                  prefix::AbstractString = MUX_PREFIX[])
+function mux_list(prefix::AbstractString,
+                  tags::AbstractVector{<:AbstractString} = String[])
     fmt = join(vcat(["#{session_name}", "#{session_id}", "#{pane_current_command}",
                      "#{session_attached}", "#{window_bell_flag}"],
                     String["#{@" * t * "}" for t in tags]), '\t')

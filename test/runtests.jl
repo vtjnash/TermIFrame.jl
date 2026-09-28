@@ -14,28 +14,23 @@ using TermIFrame
 
 @testset "naming a session" begin
     # All the parts, in the order they were given, under the host's prefix.
-    withenv() do
-        MUX_PREFIX[] = "wl"
-        @test mux_name("julia", "master", "62841") == "wl-julia-master-62841"
-        @test mux_name("julia", "master", "62841"; kind = :agent) ==
-              "wl-julia-master-62841-agent"
+    @test mux_name("wl", "julia", "master", "62841") == "wl-julia-master-62841"
+    @test mux_name("wl", "julia", "master", "62841"; kind = :agent) ==
+          "wl-julia-master-62841-agent"
 
-        # Empty parts are dropped rather than leaving a doubled separator.
-        @test mux_name("julia", "", "62841") == "wl-julia-62841"
-        @test mux_name("julia") == "wl-julia"
+    # Empty parts are dropped rather than leaving a doubled separator.
+    @test mux_name("wl", "julia", "", "62841") == "wl-julia-62841"
+    @test mux_name("wl", "julia") == "wl-julia"
 
-        # tmux does not reject `.` or `:` in a session name, it rewrites them to
-        # `_` and says nothing. A name that did not do the same substitution
-        # would create a session and then never find it again.
-        @test mux_name("Distributed.jl", "", "198") == "wl-Distributed_jl-198"
-        @test mux_name("a:b") == "wl-a_b"
-        # `/` it leaves alone, which is what lets a branch keep its owner prefix.
-        @test mux_name("julia-wt2", "vtjnash/fix", "1") == "wl-julia-wt2-vtjnash/fix-1"
+    # tmux does not reject `.` or `:` in a session name, it rewrites them to
+    # `_` and says nothing. A name that did not do the same substitution
+    # would create a session and then never find it again.
+    @test mux_name("wl", "Distributed.jl", "", "198") == "wl-Distributed_jl-198"
+    @test mux_name("wl", "a:b") == "wl-a_b"
+    # `/` it leaves alone, which is what lets a branch keep its owner prefix.
+    @test mux_name("wl", "julia-wt2", "vtjnash/fix", "1") == "wl-julia-wt2-vtjnash/fix-1"
 
-        MUX_PREFIX[] = "demo"
-        @test mux_name("x") == "demo-x"
-        MUX_PREFIX[] = "iframe"
-    end
+    @test mux_name("demo", "x") == "demo-x"
 end
 
 @testset "which binary, and why not the one on PATH" begin
@@ -80,33 +75,18 @@ end
         ok, err = mux("list-sessions")
         @test ok === false && occursin("no tmux", err)
         @test mux_alive("anything") === false
-        @test mux_sessions() == String[]
-        @test mux_list() == MuxRow[]
+        @test mux_sessions("wl") == String[]
+        @test mux_list("wl") == MuxRow[]
         @test iframe("anything", "t") === nothing
     end
 end
 
 @testset "the environment an embedded program starts with" begin
-    # A program started in an iframe is its own session, and has no business
-    # holding the credentials of the one that launched it. The names are read
-    # from this process, so nothing is scrubbed that was not there.
-    withenv("CLAUDE_CODE_CHILD_SESSION" => "1", "CLAUDE_CODE_TOKEN" => "x") do
-        s = standalone("bash")
-        @test startswith(s, "env -u ")
-        @test occursin("-u CLAUDE_CODE_CHILD_SESSION", s)
-        @test occursin("-u CLAUDE_CODE_TOKEN", s)
-        @test endswith(s, " bash")
-        # And a host that wants to inherit everything says so.
-        @test standalone("bash"; scrub = String[]) == "bash"
-        # What it is handed instead: quoted for the shell tmux runs it
-        # through, so a value is a value and never a word to expand.
-        s = standalone("bash"; scrub = String[],
-                       set = ["SSH_AUTH_SOCK" => "/run/a.sock", "X" => "it's \$HOME"])
-        @test s == "env SSH_AUTH_SOCK='/run/a.sock' X='it'\\''s \$HOME' bash"
-        # Scrubbed and set together, the unsets first.
-        s = standalone("bash"; set = ["A" => "1"])
-        @test occursin("-u CLAUDE_CODE_TOKEN ", s) && endswith(s, " A='1' bash")
-    end
+    # What it is handed, whatever the server holds: quoted for the shell tmux
+    # runs it through, so a value is a value and never a word to expand.
+    @test standalone("bash") == "bash"
+    s = standalone("bash"; set = ["SSH_AUTH_SOCK" => "/run/a.sock", "X" => "it's \$HOME"])
+    @test s == "env SSH_AUTH_SOCK='/run/a.sock' X='it'\\''s \$HOME' bash"
 end
 
 @testset "a command as a control line" begin
@@ -260,17 +240,18 @@ end
 if mux_bin() === nothing
     @info "no tmux; skipping the tests that need a server"
 else
-    MUX_PREFIX[] = "tif"
+    # The prefix the sessions here are named under, and listed by.
+    P = "tif"
 
     @testset "a child program in a box" begin
-        n = mux_name("test", "screen")
+        n = mux_name(P, "test", "screen")
         mux_kill(n)
         @test first(mux_start(n, pwd(),
             "sh -c 'printf \"\\033[1;32mgreen\\033[0m plain\\n\"; sleep 120'"))
         # Starting one that is already up is not an error, and does not restart it.
         @test mux_start(n, pwd(), "true") == (true, "")
         @test mux_alive(n) === true
-        @test n in mux_sessions()
+        @test n in mux_sessions(P)
 
         f = iframe(n, "demo")
         @test f !== nothing
@@ -299,19 +280,19 @@ else
         # come back on the row.
         @test mux_tag!(n; worktree = pwd(), kind = :shell, item = "demo#1")
         tags = ["worktree", "kind", "item", "url"]
-        r = only(filter(x -> x.name == n, mux_list(tags)))
+        r = only(filter(x -> x.name == n, mux_list(P, tags)))
         # In the order they were asked for; a tag never set reads back empty.
         @test r.tags == [pwd(), "shell", "demo#1", ""]
         @test startswith(r.id, '$')
         # A value ending in `;` is a separator to tmux unless it is escaped.
         @test mux_tag!(n; url = "https://example.com/1", item = "x;")
-        r = only(filter(x -> x.name == n, mux_list(tags)))
+        r = only(filter(x -> x.name == n, mux_list(P, tags)))
         @test r.tags[3:4] == ["x;", "https://example.com/1"]
         # The id is the session's, whatever it is called.
         @test mux_rename(n, n * "-r")
-        @test only(filter(x -> x.name == n * "-r", mux_list())).id == r.id
+        @test only(filter(x -> x.name == n * "-r", mux_list(P))).id == r.id
         @test mux_rename(n * "-r", n)
-        @test isempty(only(filter(x -> x.name == n, mux_list())).tags)
+        @test isempty(only(filter(x -> x.name == n, mux_list(P))).tags)
         # An open iframe *is* an attached client, which is what `attached`
         # reports - a host drawing a session and a person looking at it full
         # screen are the same thing to tmux.
@@ -324,7 +305,7 @@ else
 
         # A bell rung with nobody attached is kept by tmux until somebody is:
         # `bell` is the server's own seen bit, and attaching is what reads it.
-        row() = only(filter(x -> x.name == n, mux_list()))
+        row() = only(filter(x -> x.name == n, mux_list(P)))
         @test row().attached === false && row().bell === false
         ring() = (@test mux_ring!(n); sleep(0.2))
         ring()
@@ -347,7 +328,7 @@ else
     end
 
     @testset "a host takes the keys it wants and leaves the rest" begin
-        n = mux_name("test", "keys")
+        n = mux_name(P, "test", "keys")
         mux_kill(n)
         mux_start(n, pwd(), "sleep 120")
         f = iframe(n, "demo")
@@ -385,7 +366,7 @@ else
         # The wheel reports were arriving and being dropped, because a report
         # forwarded to a program that never asked for one prints as the control
         # characters it is - so the ones nobody wanted are the ones this answers.
-        n = mux_name("test", "scrollback")
+        n = mux_name(P, "test", "scrollback")
         mux_kill(n)
         mux_start(n, pwd(), "sh -c 'seq 1 500; sh'")
         f = iframe(n, "sh")
@@ -470,7 +451,7 @@ else
         knows = something(tryparse(Float64, match(r"[0-9]+\.[0-9]+",
             readchomp(`$(mux_cmd("-V"))`)).match), 0.0) >= 3.7
         for asks in (false, true)
-            n = mux_name("test", asks ? "brackets" : "plain")
+            n = mux_name(P, "test", asks ? "brackets" : "plain")
             mux_kill(n)
             out = tempname()
             mux_start(n, pwd(), string("sh -c 'stty raw -echo; ",
@@ -507,7 +488,7 @@ else
     end
 
     @testset "the child exiting is the host's to see" begin
-        n = mux_name("test", "onend")
+        n = mux_name(P, "test", "onend")
         mux_kill(n)
         mux_start(n, pwd(), "sh -c 'sleep 0.3'")
         f = iframe(n, "brief")
@@ -537,7 +518,7 @@ else
     end
 
     @testset "full screen is the host's to carry out" begin
-        n = mux_name("test", "attach")
+        n = mux_name(P, "test", "attach")
         mux_kill(n)
         mux_start(n, pwd(), "sleep 120")
         f = iframe(n, "demo")
@@ -552,27 +533,27 @@ else
     @testset "one command pipe for all of them" begin
         mux_pipe_close()
         @test mux_pipe() === nothing
-        n = mux_name("test", "pipe")
+        n = mux_name(P, "test", "pipe")
         mux_kill(n)
         mux_start(n, pwd(), "sleep 120")
-        hidden = pipe_session()
-        c = mux_pipe_open()
-        @test c !== nothing && mux_pipe() === c && mux_pipe_open() === c
+        hidden = pipe_session(P)
+        c = mux_pipe_open(P)
+        @test c !== nothing && mux_pipe() === c && mux_pipe_open(P) === c
         @test c.bells                          # 3.2 and up
         # Outside the prefix: not ours to list, and not counted as one of ours.
-        @test !(hidden in mux_sessions()) && n in mux_sessions()
+        @test !(hidden in mux_sessions(P)) && n in mux_sessions(P)
         @test mux_alive(hidden)
         # Commands go down it, and answer as a process would.
         before = c.outputs
         @test mux_alive(n) && !mux_alive(n * "-nope")
         @test mux_tag!(n; item = "x;", url = "it's #1 \$HOME")
-        r = only(filter(x -> x.name == n, mux_list(["item", "url"])))
+        r = only(filter(x -> x.name == n, mux_list(P, ["item", "url"])))
         @test r.tags == ["x;", "it's #1 \$HOME"]
         # Looking at the list through the pipe is not looking at a session:
         # a bell stands beside it.
         @test mux_ring!(n)
         sleep(0.2)
-        r = only(filter(x -> x.name == n, mux_list()))
+        r = only(filter(x -> x.name == n, mux_list(P)))
         @test r.bell && !r.attached
         # And the pipe hears it: the subscription says who rang, within the
         # second tmux checks it in.
@@ -601,13 +582,13 @@ else
         # One whose process is gone - a host that died after starting it and
         # before its client was on it - is ended by the next pipe to open.
         mux_pipe_close()
-        n = mux_name("test", "keepup")
+        n = mux_name(P, "test", "keepup")
         mux_start(n, pwd(), "sleep 120")
         pid = first(p for p in 4_000_000:-1:1 if !TermIFrame.pid_alive(p))
-        dead = pipe_session(pid)
+        dead = pipe_session(P, pid)
         mux_spawn("new-session", "-d", "-s", dead, "cat")
         @test mux_alive(dead)
-        c = mux_pipe_open()
+        c = mux_pipe_open(P)
         @test c !== nothing && !mux_alive(dead)
         # And one whose client goes away takes its session with it, which is
         # how a host that is killed leaves nothing behind.
@@ -618,7 +599,6 @@ else
         mux_kill(n)
     end
 
-    MUX_PREFIX[] = "iframe"
 end
 
 end # testset TermIFrame
