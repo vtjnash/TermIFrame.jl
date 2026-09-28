@@ -86,7 +86,7 @@ IFrame(name::AbstractString, title::AbstractString = "") =
            nothing, nothing, false, nothing)
 
 """
-    iframe(name, title) -> IFrame | Nothing
+    iframe(name, title; pause = PAUSE_AFTER) -> IFrame | Nothing
 
 Open an iframe onto `name`, which must already be a running session - starting
 one is [`mux_start`](@ref)'s job.
@@ -94,14 +94,26 @@ one is [`mux_start`](@ref)'s job.
 Returns `nothing` when there is no multiplexer or no such session, so the caller
 can put a reason in its own status line rather than showing an empty box that
 never explains itself.
+
+The client is attached with `pause-after=pause`, in seconds: a host that stops
+reading - its own terminal stopped taking bytes, and the write to it blocked the
+process - has the pane paused and taken up again on its next sync
+([`mux_continue!`](@ref)), where without it tmux drops the client once it is
+five minutes behind and the pane says `session ended: the server said exit: too
+far behind` over a session that is still running.
 """
-function iframe(name::AbstractString, title::AbstractString)
-    c = mux_open(name)
+function iframe(name::AbstractString, title::AbstractString; pause::Integer = PAUSE_AFTER)
+    c = mux_open(name; flags = string("pause-after=", pause))
     c === nothing && return nothing
     IFrame(String(name), String(title), c, String[], (0, 0), "", false,
            (0, 0, false), false, 0, 0, false, false, nothing, UInt8[], UInt8[],
            nothing, nothing, false, nothing)
 end
+
+"""How long, in seconds, a pane's output can go unread before the server pauses
+it for the iframe's client; see [`iframe`](@ref). Well short of the five minutes
+after which a client without it is dropped, and long past any frame."""
+const PAUSE_AFTER = 60
 
 """
     iframe_box(w, h) -> (cols, rows)
@@ -150,6 +162,9 @@ function iframe_sync!(f::IFrame, cols::Integer, rows::Integer)
         # A closed stdout is the terminal going away, which the host will find
         # out about on its own.
     end
+    # A pane the server paused while this was not reading is continued before
+    # its screen is read, and the read is the resync.
+    mux_continue!(f.client)
     box = (Int(cols), Int(rows))
     if box != f.sized
         mux_resize(f.client, box[1], box[2]) && (f.sized = box)

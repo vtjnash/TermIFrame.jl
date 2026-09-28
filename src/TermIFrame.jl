@@ -67,7 +67,7 @@ export mux_bin, mux_cmd, bundled_tmux, no_mux, mux_name, mux, mux_spawn, mux_lin
        mux_rename, mux_sessions, mux_list, MuxRow, mux_seen!, mux_ring!, mux_attach, standalone,
        MUX_ENV, MUX_BG, mux_bg!
 export MuxProto, mux_feed!, mux_unescape, passthrough
-export MuxClient, mux_open, mux_wait, mux_relay!, mux_sync!, mux_ask, mux_capture, mux_pane_state, CopyMode, copy_selected, mux_paste, mux_brackets,
+export MuxClient, mux_open, mux_wait, mux_continue!, mux_relay!, mux_sync!, mux_ask, mux_capture, mux_pane_state, CopyMode, copy_selected, mux_paste, mux_brackets,
        mux_resize, mux_keys, mux_close,
        MUX_PIPE, MUX_BELLS, mux_pipe, mux_pipe_open, mux_pipe_close, pipe_session,
        MUX_OLDER, mux_version

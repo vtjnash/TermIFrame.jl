@@ -120,6 +120,11 @@ end
 
     # Output arrives unasked, with the pane it came from.
     @test mux_feed!(p, "%output %5 hi") == (:output, "%5", "hi")
+    # And under `pause-after`, as `%extended-output`, with how far behind it
+    # is before the data.
+    @test mux_feed!(p, "%extended-output %5 12 : a\\040b") == (:output, "%5", "a b")
+    @test mux_feed!(p, "%extended-output %5 12 : ") == (:output, "%5", "")
+    @test mux_feed!(p, "%pause %5") == (:notice, "pause", "%5")
     # Anything else `%` is a notice.
     @test mux_feed!(p, "%exit ") == (:notice, "exit", "")
     @test mux_feed!(p, "%sessions-changed") == (:notice, "sessions-changed", "")
@@ -750,6 +755,31 @@ else
         # And the box still draws with no child behind it.
         out = iframe_rows(f, 40, 10)
         @test length(out) == 10 && all(awidth(r) == 40 for r in out)
+        mux_kill(n)
+    end
+
+    @testset "a host that stops reading has the pane paused, not dropped" begin
+        # A terminal that stops taking bytes blocks the host writing to it, and
+        # the whole process with it, reader and all. Without `pause-after` tmux
+        # drops the client once its output is five minutes old: `session ended:
+        # the server said exit: too far behind`, over a session still running.
+        n = mux_name(P, "test", "stall")
+        mux_kill(n)
+        mux_start(n, pwd(), "sh -c 'sleep 0.5; while :; do seq 1 20000; done'")
+        f = iframe(n, "flood"; pause = 1)
+        c = f.client
+        box = iframe_box(40, 10)
+        @test iframe_sync!(f, box...)
+        # The thread stops, as it does behind a blocked write, not the task.
+        Libc.systemsleep(4)
+        @test timedwait(() -> !isempty(c.paused), 5.0) === :ok
+        @test !c.dead
+        # The next sync takes it up again and reads the screen.
+        @test iframe_sync!(f, box...) && f.client === c && isempty(c.paused)
+        @test !isempty(f.frame)
+        before = c.outputs
+        @test timedwait(() -> c.outputs > before, 5.0) === :ok
+        @test !c.dead
         mux_kill(n)
     end
 

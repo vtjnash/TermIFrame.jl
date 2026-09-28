@@ -27,7 +27,9 @@ MuxProto() = MuxProto(false, false, String[])
 One protocol line. `kind` is
 
   * `:reply`  — a block closed; `a` is whether it succeeded, `b` its lines
-  * `:output` — `a` is the pane id, `b` the decoded bytes
+  * `:output` — `a` is the pane id, `b` the decoded bytes; `%extended-output`
+    too, which is what a client attached with `pause-after` hears in its place
+    (`%extended-output %5 <age> : <data>`), and says nothing more that matters
   * `:notice` — any other `%` notification; `a` is its name, `b` the rest
   * `:more`   — a line inside an open block, kept for the reply
 
@@ -57,6 +59,14 @@ function mux_feed!(p::MuxProto, line::AbstractString)
         sp === nothing && return (:output, String(rest), "")
         return (:output, String(SubString(rest, 1, sp - 1)),
                 mux_unescape(SubString(rest, sp + 1)))
+    end
+    if startswith(line, "%extended-output ")
+        rest = SubString(line, 18)
+        sp = findfirst(' ', rest)
+        sp === nothing && return (:output, String(rest), "")
+        at = findfirst(" : ", rest)
+        return (:output, String(SubString(rest, 1, sp - 1)),
+                at === nothing ? "" : mux_unescape(SubString(rest, last(at) + 1)))
     end
     if startswith(line, "%")
         sp = findfirst(' ', line)
@@ -188,6 +198,8 @@ call on every `%output`, and all any host did with one was raise a wake.
   * `sessions`  `%sessions-changed` has come since the host last lowered it.
   * `subs`      each subscription's latest value, by name (`refresh-client -B`).
   * `outputs`   how many `%output` lines have arrived, ever.
+  * `paused`    panes the server has paused (`%pause`), not yet continued -
+                see [`mux_continue!`](@ref).
   * `bells`     the command pipe's bell subscription took
                 ([`mux_pipe_open`](@ref)); a change in who rang is then a wake.
 
@@ -209,6 +221,7 @@ mutable struct MuxClient
     sessions::Bool
     subs::Dict{String,String}
     outputs::Int
+    paused::Vector{String}
     bells::Bool
     reader::Union{Task,Nothing}
     dead::Bool
@@ -255,7 +268,7 @@ function mux_open(name::AbstractString; flags::AbstractString = "")
     end
     c = MuxClient(String(name), proc, MuxProto(), Channel{Any}(Inf), ReentrantLock(),
                   Base.Event(true), String[], Dict{String,Base.RefValue{String}}(),
-                  false, Dict{String,String}(), 0, false, nothing, false, "")
+                  false, Dict{String,String}(), 0, String[], false, nothing, false, "")
     c.reader = @async mux_read(c)
     mux_sync!(c) || (mux_close(c); return nothing)
     c
@@ -286,6 +299,14 @@ function mux_read(c::MuxClient)
                     mux_dead!(c, isempty(b) ? "the server said exit" :
                                  string("the server said exit: ", b))
                     break
+                elseif a == "pause"
+                    # What it had queued for the pane is gone, so a clipboard
+                    # cut through by the pause is never finished: its carry
+                    # would take whatever comes after the continue as its end.
+                    p = String(strip(b))
+                    haskey(c.carry, p) && (c.carry[p][] = "")
+                    p in c.paused || push!(c.paused, p)
+                    notify(c.wake)
                 elseif a == "sessions-changed"
                     c.sessions = true
                     notify(c.wake)
@@ -326,6 +347,32 @@ function mux_wait(c::MuxClient)
     c.dead && return false
     wait(c.wake)
     !c.dead
+end
+
+"""
+    mux_continue!(c) -> Bool
+
+Take up the panes the server paused, and say whether there were any.
+
+A client attached with `pause-after` that has not read a pane's output for
+that long is not dropped - tmux's answer without it, once it is five minutes
+behind, is `%exit too far behind` - but has the pane paused: the output queued
+for it is thrown away and no more is sent until it is asked for again. Nothing
+is lost that the screen needs, since the screen is read from the grid
+([`mux_capture`](@ref)); only a clipboard in what was thrown away.
+
+The reader cannot ask for it itself. It is the one that delivers replies, and
+one arriving that no ask was waiting for would answer the next question
+instead. So it only notes the pane and wakes the host, whose sync continues it
+before reading the screen, which is the resync the pause calls for.
+"""
+function mux_continue!(c::MuxClient)
+    isempty(c.paused) && return false
+    panes, c.paused = c.paused, String[]
+    for p in panes
+        mux_ask(c, string("refresh-client -A '", p, ":continue'"))
+    end
+    true
 end
 
 """
