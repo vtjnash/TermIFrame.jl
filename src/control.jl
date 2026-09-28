@@ -481,7 +481,7 @@ struct CopyMode
 end
 
 """
-    mux_pane_state(c) -> (x, y, showing, mouse, history, alt, copy)
+    mux_pane_state(c) -> (x, y, showing, mouse, history, alt, copy, dead)
 
 What the pane knows that its screen does not say.
 
@@ -505,6 +505,10 @@ scrollback while one is up.
 is not in one - including when it is in some other mode, which draws nothing
 this can read.
 
+`dead` is the child's exit status when it has exited and the server kept the
+pane (`remain-on-exit`, which [`mux_start`](@ref) sets for a failure), and
+`nothing` while it runs.
+
 The format is quoted and the target is not, which is the opposite way round
 from everywhere else and is not a preference: `#` starts a comment in tmux's
 command syntax, so an unquoted format is discarded and the default message
@@ -517,18 +521,21 @@ function mux_pane_state(c::MuxClient)
         "#{history_size},#{alternate_on}," *
         "#{pane_mode},#{scroll_position},#{copy_cursor_x},#{copy_cursor_y}," *
         "#{selection_present},#{selection_start_x},#{selection_start_y}," *
-        "#{selection_end_x},#{selection_end_y},#{rectangle_toggle},#{mode-keys}'"))
-    none = (0, 0, false, false, 0, false, nothing)
+        "#{selection_end_x},#{selection_end_y},#{rectangle_toggle},#{mode-keys}," *
+        "#{pane_dead},#{pane_dead_status}'"))
+    none = (0, 0, false, false, 0, false, nothing, nothing)
     (ok && !isempty(lines)) || return none
     f = split(strip(lines[1]), ',')
-    length(f) == 17 || return none
+    length(f) == 19 || return none
     num(i) = something(tryparse(Int, f[i]), 0)
     # `view-mode` is copy mode too - what `run-shell` output is shown in.
     copy = f[7] in ("copy-mode", "view-mode") ?
         CopyMode(num(8), (num(9), num(10)),
                  f[11] == "1" ? (num(12), num(13), num(14), num(15)) : nothing,
                  f[16] == "1", f[17] == "vi") : nothing
-    (num(1), num(2), f[3] == "1", f[4] == "1", num(5), f[6] == "1", copy)
+    # A child killed by a signal has no status; it failed all the same.
+    dead = f[18] == "1" ? something(tryparse(Int, f[19]), -1) : nothing
+    (num(1), num(2), f[3] == "1", f[4] == "1", num(5), f[6] == "1", copy, dead)
 end
 
 """

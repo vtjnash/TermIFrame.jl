@@ -245,14 +245,30 @@ several times.
 
 `set` is [`standalone`](@ref)'s: what the program is to be handed, whatever
 the server holds.
+
+A child that fails - exits non-zero, or never runs at all - leaves its pane
+behind (`remain-on-exit failed`), so that what it said is still there to be
+read: an agent whose command was not found used to end its session before
+anything could attach, and the only word left was that nothing could. One
+that exits cleanly ends the session as before. The option is set before the
+command runs, and not after: the session starts on `cat`, which waits, and
+`respawn-pane -k` puts `cmd` in its place - down the pipe each command is its
+own round trip, and a command that fails at exec is gone inside one. A server
+too old to know `failed` (before 3.3) keeps nothing, as before.
 """
 function mux_start(name::AbstractString, dir::AbstractString, cmd::AbstractString;
                    set = Pair{String,String}[])
     mux_alive(name) && return (true, "")
+    ok, err = mux("new-session", "-d", "-s", name, "-c", dir, "cat")
+    ok || return (false, isempty(err) ? "could not start session" : err)
+    t = string("=", name, ":")
+    mux("set-option", "-w", "-t", t, "remain-on-exit", "failed")
     # One trailing argument, so tmux hands the whole thing to a shell. Passing
     # it pre-split would make the caller quote for a shell it cannot see.
-    ok, err = mux("new-session", "-d", "-s", name, "-c", dir, standalone(cmd; set))
-    ok ? (true, "") : (false, isempty(err) ? "could not start session" : err)
+    ok, err = mux("respawn-pane", "-k", "-t", t, "-c", dir, standalone(cmd; set))
+    ok && return (true, "")
+    mux_kill(name)
+    (false, isempty(err) ? "could not start session" : err)
 end
 
 """

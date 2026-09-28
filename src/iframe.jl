@@ -34,7 +34,10 @@ from state it reads:
   * **redraw** when the client says something: [`mux_wait`](@ref) on `client`,
     which answers once more as the session ends.
   * **the child exited**: a sync that found the client dead leaves `client`
-    `nothing` and says so in `status`. Whatever the host does about it - an
+    `nothing` and says so in `status`. A child that *failed* is the same to
+    the host, with the screen it left in `frame` and its status in `exited`:
+    the server keeps its pane to be read ([`mux_start`](@ref)), and
+    [`iframe_close!`](@ref) is what lets it go. Whatever the host does about it - an
     editor's file read back - is done once, by the host, which is the one that
     knows what once means.
   * **a key after the prefix**: [`iframe_input!`](@ref) answers it, and the
@@ -64,6 +67,8 @@ mutable struct IFrame
     press::Union{Nothing,Tuple{Int,Int}}  # where a button went down, in the
                                    # child's cells, until it comes up again
     dragging::Bool                 # that press has become a selection
+    exited::Union{Nothing,Int}     # the child's exit status, when it failed and
+                                   # the server kept its pane to show why
 end
 
 """
@@ -78,7 +83,7 @@ box, the footer, which keys are whose - answers the same way either way.
 IFrame(name::AbstractString, title::AbstractString = "") =
     IFrame(String(name), String(title), nothing, String[], (0, 0), "", false,
            (0, 0, false), false, 0, 0, false, false, nothing, UInt8[], UInt8[],
-           nothing, nothing, false)
+           nothing, nothing, false, nothing)
 
 """
     iframe(name, title) -> IFrame | Nothing
@@ -95,7 +100,7 @@ function iframe(name::AbstractString, title::AbstractString)
     c === nothing && return nothing
     IFrame(String(name), String(title), c, String[], (0, 0), "", false,
            (0, 0, false), false, 0, 0, false, false, nothing, UInt8[], UInt8[],
-           nothing, nothing, false)
+           nothing, nothing, false, nothing)
 end
 
 """
@@ -151,9 +156,22 @@ function iframe_sync!(f::IFrame, cols::Integer, rows::Integer)
     end
     # The state first, since copy mode says how far back to read: its view is
     # the one on screen while it is up, whatever our own scroll was.
-    cx, cy, showing, mouse, hist, alt, copy = mux_pane_state(f.client)
+    cx, cy, showing, mouse, hist, alt, copy, dead = mux_pane_state(f.client)
     lines = mux_capture(f.client; scroll = copy === nothing ? f.scroll : copy.scroll,
                         rows = last(f.sized))
+    if dead !== nothing && !f.client.dead
+        # The child failed and the server kept its pane: the screen as it
+        # died, tmux's `Pane is dead` line at its foot, is what is kept here,
+        # and then the child is gone as any other is - nothing can be typed at
+        # a dead pane. The session stays until the iframe lets go of it.
+        f.frame = [string(l, "\e[0m") for l in dead_screen(f.client, hist, last(f.sized))]
+        f.cursor, f.copy, f.scroll = (0, 0, false), nothing, 0
+        f.exited = dead
+        f.status = string("exited with status ", dead)
+        mux_close(f.client)
+        f.client = nothing
+        return true
+    end
     if f.client.dead
         # With the reason: a client that timed out on a reply is not a session
         # that ended, and the two want different things done about them.
@@ -173,6 +191,29 @@ function iframe_sync!(f::IFrame, cols::Integer, rows::Integer)
     # question.
     f.scroll = alt ? 0 : clamp(f.scroll, 0, hist)
     true
+end
+
+"""What a dead pane said, in `rows` rows: its history as well as its screen,
+since the pane was resized to the box after it died and a box shorter than it
+pushed its top lines - often the only ones with anything in them - into the
+history. tmux writes `Pane is dead` on the bottom row, below however many
+blank ones the screen had left; those are its padding and not the child's, so
+they go, and the last `rows` lines are what is left.
+"""
+function dead_screen(c::MuxClient, hist::Int, rows::Int)
+    lines = mux_capture(c; scroll = hist, rows = hist + rows)
+    blank(l) = isempty(strip(astrip(l)))
+    while !isempty(lines) && blank(lines[end])
+        pop!(lines)
+    end
+    if !isempty(lines)
+        i = length(lines) - 1
+        while i >= 1 && blank(lines[i])
+            i -= 1
+        end
+        lines = vcat(lines[1:i], lines[end:end])
+    end
+    length(lines) > rows ? lines[end-rows+1:end] : lines
 end
 
 """
@@ -706,6 +747,12 @@ end
     iframe_close!(f)
 
 Let go of the child. The session keeps running - that is what a session is for;
-[`mux_kill`](@ref) is what ends one.
+[`mux_kill`](@ref) is what ends one. Unless the child failed and its pane was
+kept for this (`exited`): once it has been seen there is nothing left running,
+and letting go of it is ending it.
 """
-iframe_close!(f::IFrame) = (f.client === nothing || mux_close(f.client); nothing)
+function iframe_close!(f::IFrame)
+    f.client === nothing || mux_close(f.client)
+    f.exited === nothing || (mux_kill(f.name); f.exited = nothing)
+    nothing
+end

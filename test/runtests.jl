@@ -753,6 +753,38 @@ else
         mux_kill(n)
     end
 
+    @testset "a child that fails leaves its screen to be read" begin
+        # An agent whose command was not found ended its session before it
+        # could be attached to, and all that was left to say was that it could
+        # not be. The pane is kept, for a failure only, and shown as it died.
+        box = iframe_box(60, 12)
+        for (cmd, status, said) in (("sh -c 'echo boom; exit 3'", 3, "boom"),
+                                    ("wl-no-such-agent", 127, "not found"))
+            n = mux_name(P, "test", "fails")
+            mux_kill(n)
+            @test first(mux_start(n, pwd(), cmd))
+            sleep(0.5)
+            @test mux_alive(n)                     # kept, though nothing runs
+            f = iframe(n, "failed")
+            @test f !== nothing
+            @test iframe_sync!(f, box...) === true
+            @test f.client === nothing && f.exited == status
+            @test occursin(string("status ", status), f.status)
+            text = join(astrip.(f.frame), "\n")
+            @test occursin(said, text) && occursin("Pane is dead", text)
+            # Nothing can be typed at it; letting go of it is ending it.
+            @test iframe_send!(f, UInt8['x'], box) === false
+            iframe_close!(f)
+            @test !mux_alive(n) && f.exited === nothing
+        end
+        # A child that exits cleanly ends its session as it always did.
+        n = mux_name(P, "test", "fine")
+        mux_kill(n)
+        @test first(mux_start(n, pwd(), "sh -c 'exit 0'"))
+        sleep(0.5)
+        @test !mux_alive(n)
+    end
+
     @testset "one command pipe for all of them" begin
         mux_pipe_close()
         @test mux_pipe() === nothing
