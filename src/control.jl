@@ -763,9 +763,40 @@ function mux_pipe_open(prefix::AbstractString)
     c.bells = first(mux_ask(c, mux_line(["refresh-client", "-B",
                                          string(MUX_BELLS, "::", bell_format(prefix))])))
     MUX_PIPE[] = c
+    MUX_OLDER[] = mux_older(c)
     # Panes that were running before there was a pipe to seed them down.
     mux_seed_all(prefix)
     c
+end
+
+"""The server's version and this binary's, when the server is the older: `("3.4",
+"3.5a")`, else `("", "")`. Set when the pipe opens and cleared when it closes,
+since the server can be a different one each time.
+
+A server already running on the socket is the one every binary talks to, and
+its version, not ours, decides what a command does - so one older than ours may
+be missing what this package counts on, whichever thing that turns out to be,
+and a host has something to tell its user. A version that does not read as
+`<major>.<minor>[letter]` (`master`, say) is not called older."""
+const MUX_OLDER = Ref(("", ""))
+
+"""Ask the server over `c` for its version and this binary for its own, and
+answer them as [`MUX_OLDER`](@ref) holds them."""
+function mux_older(c::MuxClient)
+    ok, lines = mux_ask(c, mux_line(["display", "-p", "#{version}"]))
+    server = ok && !isempty(lines) ? strip(first(lines)) : ""
+    ok, out = mux_spawn("-V")
+    ours = ok ? strip(replace(out, r"^tmux " => "")) : ""
+    a, b = mux_version(server), mux_version(ours)
+    a === nothing || b === nothing || a >= b ? ("", "") : (String(server), String(ours))
+end
+
+"""A tmux version as something to compare: `3.5a` is `(3, 5, 'a')`, and `3.5`
+`(3, 5, ' ')`, before it; `next-3.6` is 3.6. `nothing` for anything else."""
+function mux_version(v::AbstractString)
+    m = match(r"(\d+)\.(\d+)([a-z]?)", v)
+    m === nothing && return nothing
+    (parse(Int, m[1]), parse(Int, m[2]), isempty(m[3]) ? ' ' : m[3][1])
 end
 
 """End the sessions of pipes whose process is gone: a host that died
@@ -799,6 +830,7 @@ that did not take.
 function mux_pipe_close()
     c = MUX_PIPE[]
     MUX_PIPE[] = nothing
+    MUX_OLDER[] = ("", "")
     c === nothing && return nothing
     mux_close(c)
     mux_spawn("kill-session", "-t=" * c.name)

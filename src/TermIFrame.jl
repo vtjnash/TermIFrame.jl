@@ -69,7 +69,8 @@ export mux_bin, mux_cmd, bundled_tmux, no_mux, mux_name, mux, mux_spawn, mux_lin
 export MuxProto, mux_feed!, mux_unescape, passthrough
 export MuxClient, mux_open, mux_wait, mux_relay!, mux_sync!, mux_ask, mux_capture, mux_pane_state, CopyMode, copy_selected, mux_paste, mux_brackets,
        mux_resize, mux_keys, mux_close,
-       MUX_PIPE, MUX_BELLS, mux_pipe, mux_pipe_open, mux_pipe_close, pipe_session
+       MUX_PIPE, MUX_BELLS, mux_pipe, mux_pipe_open, mux_pipe_close, pipe_session,
+       MUX_OLDER, mux_version
 export bordered
 export IFrame, iframe, iframe_box, iframe_origin, iframe_sync!, iframe_cursor,
        iframe_note, iframe_rows, iframe_input!, iframe_send!, iframe_close!,

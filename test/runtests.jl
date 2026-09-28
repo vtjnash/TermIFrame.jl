@@ -795,6 +795,13 @@ else
         c = mux_pipe_open(P)
         @test c !== nothing && mux_pipe() === c && mux_pipe_open(P) === c
         @test c.bells                          # 3.2 and up
+        # Our own server is no older than ourselves; a version is compared as
+        # tmux numbers them, letter last, and one that is not a number is not
+        # called older.
+        @test MUX_OLDER[] == ("", "")
+        @test mux_version("3.4") < mux_version("3.5") < mux_version("3.5a") <
+              mux_version("next-3.6") < mux_version("3.10")
+        @test mux_version("master") === nothing
         # Outside the prefix: not ours to list, and not counted as one of ours.
         @test !(parked in mux_sessions(P)) && n in mux_sessions(P)
         @test mux_alive(parked)
