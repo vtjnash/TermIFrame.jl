@@ -235,7 +235,7 @@ for one thing would otherwise answer for another whose name extends it.
 mux_alive(name::AbstractString) = first(mux("has-session", "-t=" * name))
 
 """
-    mux_start(name, dir, cmd; set = []) -> (ok, err)
+    mux_start(name, dir, cmd; set = [], pipe = "") -> (ok, err)
 
 Start a detached session running `cmd` in `dir`, unless it is already up.
 
@@ -255,14 +255,21 @@ command runs, and not after: the session starts on `cat`, which waits, and
 `respawn-pane -k` puts `cmd` in its place - down the pipe each command is its
 own round trip, and a command that fails at exec is gone inside one. A server
 too old to know `failed` (before 3.3) keeps nothing, as before.
+
+`pipe` is the prefix whose command pipe ([`mux_pipe_open`](@ref)) is opened
+while the session is still `cat`, so that the terminal's background
+([`mux_bg!`](@ref)) is on the pane before the child can ask for it - nvim asks
+as it starts, and a pane seeded after that had already been told nothing.
 """
 function mux_start(name::AbstractString, dir::AbstractString, cmd::AbstractString;
-                   set = Pair{String,String}[])
+                   set = Pair{String,String}[], pipe::AbstractString = "")
     mux_alive(name) && return (true, "")
-    ok, err = mux("new-session", "-d", "-s", name, "-c", dir, "cat")
-    ok || return (false, isempty(err) ? "could not start session" : err)
+    ok, out = mux("new-session", "-d", "-s", name, "-c", dir, "-P", "-F", "#{pane_id}", "cat")
+    ok || return (false, isempty(out) ? "could not start session" : out)
     t = string("=", name, ":")
     mux("set-option", "-w", "-t", t, "remain-on-exit", "failed")
+    isempty(pipe) || mux_pipe_open(pipe)
+    mux_seed(strip(out))
     # One trailing argument, so tmux hands the whole thing to a shell. Passing
     # it pre-split would make the caller quote for a shell it cannot see.
     ok, err = mux("respawn-pane", "-k", "-t", t, "-c", dir, standalone(cmd; set))
@@ -416,6 +423,64 @@ function mux_list(prefix::AbstractString,
     end
     sort!(rows; by = r -> r.name)
     rows
+end
+
+"""The terminal's background, as the host last heard it answer `OSC 11 ?`:
+the colour alone, `rgb:1e1e/1e1e/1e1e`, or `""` before any answer came."""
+const MUX_BG = Ref("")
+
+"""
+    mux_bg!(prefix, colour) -> Bool
+
+The terminal's background is `colour`: put it on every pane of the sessions
+under `prefix`, and on each one [`mux_start`](@ref) starts from here on.
+
+A pane's child asks for the background with `OSC 11 ?` - nvim does as it
+starts, and sets `'background'` from the answer - and tmux answers from what it
+knows: a colour a control client gave the pane with `refresh-client -r`, else
+the pane's `window-style`, else the terminal of a client attached to it. A
+control client has no terminal, so for a pane only the host is looking at
+there is nothing to say, and tmux says nothing (`input_osc_colour_reply`,
+3.5a and 3.6). So the host asks its own terminal and hands tmux the answer,
+the one thing a control client has for this: then tmux answers the child
+itself, at once and in the child's own terminator, and `CSI ? 996 n` from the
+same colour. Measured on 3.5a: a pane seeded on `cat` and then respawned
+answers `\\e]11;rgb:ffff/fafa/f0f0\\e\\\\`; unseeded, nothing; seeded and with
+no control client left on the server, nothing again.
+
+Down the pipe or not at all: `refresh-client` from a spawned process has no
+client to be. A pane seeded before its child starts is `mux_start`'s, and one
+already running when the pipe opens is [`mux_pipe_open`](@ref)'s. Nothing here
+tells a running child the colour changed: tmux sends its own `997` report only
+on a change of the pane's style, which a seed is not.
+
+Answers whether the colour was new.
+"""
+function mux_bg!(prefix::AbstractString, colour::AbstractString)
+    colour == MUX_BG[] && return false
+    MUX_BG[] = String(colour)
+    mux_seed_all(prefix)
+    true
+end
+
+"""Seed every pane of the sessions under `prefix`, when there is a pipe to
+seed them down and a colour to seed."""
+function mux_seed_all(prefix::AbstractString)
+    (isempty(MUX_BG[]) || mux_pipe() === nothing) && return
+    ok, out = mux("list-panes", "-a", "-F", "#{session_name}\t#{pane_id}")
+    ok || return
+    p = string(prefix, "-")
+    for line in split(out, '\n'; keepempty = false)
+        f = split(line, '\t')
+        length(f) == 2 && startswith(f[1], p) && mux_seed(f[2])
+    end
+end
+
+"""Give pane `pane` (`%3`) the background: `refresh-client -r`, whose report
+is parsed as the terminal's own answer would be, so it is written as one."""
+function mux_seed(pane::AbstractString)
+    (isempty(MUX_BG[]) || isempty(pane) || mux_pipe() === nothing) && return false
+    first(mux("refresh-client", "-r", string(pane, ":\e]11;", MUX_BG[], "\a")))
 end
 
 """

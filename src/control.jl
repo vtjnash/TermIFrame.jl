@@ -743,7 +743,9 @@ exits and the session goes. A host that died between the two leaves one behind,
 and the next to open a pipe ends it, since it would keep the server up.
 
 The bell subscription ([`bell_format`](@ref)), for `prefix`, is asked for here; `bells` on the
-client says whether it took, which a server before 3.2 would refuse. Answers
+client says whether it took, which a server before 3.2 would refuse. The
+terminal's background, if the host has heard it, goes on every pane under
+`prefix` ([`mux_bg!`](@ref)). Answers
 `nothing` where there is no tmux or the attach failed, and [`mux`](@ref) goes on
 spawning.
 """
@@ -761,6 +763,8 @@ function mux_pipe_open(prefix::AbstractString)
     c.bells = first(mux_ask(c, mux_line(["refresh-client", "-B",
                                          string(MUX_BELLS, "::", bell_format(prefix))])))
     MUX_PIPE[] = c
+    # Panes that were running before there was a pipe to seed them down.
+    mux_seed_all(prefix)
     c
 end
 

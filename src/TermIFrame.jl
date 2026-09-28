@@ -65,7 +65,7 @@ using TermInput
 export ESCAPE, awidth, astrip, afit, apad, amid, awrap
 export mux_bin, mux_cmd, bundled_tmux, no_mux, mux_name, mux, mux_spawn, mux_line, mux_alive, mux_start, mux_kill, mux_tag!,
        mux_rename, mux_sessions, mux_list, MuxRow, mux_seen!, mux_ring!, mux_attach, standalone,
-       MUX_ENV
+       MUX_ENV, MUX_BG, mux_bg!
 export MuxProto, mux_feed!, mux_unescape, passthrough
 export MuxClient, mux_open, mux_wait, mux_relay!, mux_sync!, mux_ask, mux_capture, mux_pane_state, CopyMode, copy_selected, mux_paste, mux_brackets,
        mux_resize, mux_keys, mux_close,

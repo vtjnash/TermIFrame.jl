@@ -833,6 +833,50 @@ else
         @test !mux_alive(parked)
     end
 
+    @testset "the terminal's background, for a child that asks" begin
+        # A child that asks with `OSC 11 ?`, after `wait` seconds, and keeps
+        # whatever comes back. A control client has no terminal to answer from,
+        # so every answer here is one the host seeded.
+        mux_pipe_close()
+        dir = mktempdir()
+        ask = joinpath(dir, "ask")
+        write(ask, "stty raw -echo; sleep \$1; printf '\\033]11;?\\033\\\\'\n",
+                   "dd bs=1 count=25 of=\$2 2>/dev/null; sleep 120\n")
+        answer(f) = (timedwait(() -> filesize(f) == 25, 5.0); isfile(f) ? read(f, String) : "")
+        names = String[]
+        start(tag, wait; pipe = "") = begin
+            n = mux_name(P, "test", tag)
+            mux_kill(n)
+            push!(names, n)
+            f = joinpath(dir, tag)
+            @test first(mux_start(n, pwd(), string("sh ", ask, " ", wait, " ", f); pipe))
+            f
+        end
+        try
+            # Heard before anything is running: kept, and on the pane before
+            # its child starts, since the child may ask at once.
+            @test mux_bg!(P, "rgb:ffff/fafa/f0f0")
+            @test !mux_bg!(P, "rgb:ffff/fafa/f0f0")
+            f = start("bg-now", 0; pipe = P)
+            @test mux_pipe() !== nothing
+            @test answer(f) == "\e]11;rgb:ffff/fafa/f0f0\e\\"
+            # A change reaches a pane that is already running.
+            f = start("bg-changed", 1)
+            @test mux_bg!(P, "rgb:1010/2020/3030")
+            @test answer(f) == "\e]11;rgb:1010/2020/3030\e\\"
+            # A pane started with no pipe to seed it down is seeded as the
+            # pipe opens.
+            mux_pipe_close()
+            f = start("bg-later", 1)
+            @test mux_pipe_open(P) !== nothing
+            @test answer(f) == "\e]11;rgb:1010/2020/3030\e\\"
+        finally
+            TermIFrame.MUX_BG[] = ""
+            foreach(mux_kill, names)
+            mux_pipe_close()
+        end
+    end
+
     @testset "a pipe's session outlives only a live host" begin
         # One whose process is gone - a host that died after starting it and
         # before its client was on it - is ended by the next pipe to open.
