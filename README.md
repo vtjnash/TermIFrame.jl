@@ -41,8 +41,10 @@ iframe_input!(f, bytes, iframe_origin(x, y), (cols, rows))
 
 The host hands in no functions. It waits on the client for output and reads what
 changed off the iframe: `client` gone to `nothing` after a sync is the child
-having exited, and `iframe_input!` answering `:attach` is `^]a` asking for the
-terminal, which the host hands over with `mux_attach(f.name; suspend)`.
+having exited, and `iframe_input!` answering a byte is the key typed after `^]`,
+which is the host's to act on - with `iframe_close!`, `mux_kill`,
+`mux_attach(f.name; suspend)`, `iframe_sync!` or `iframe_send!` - before it
+calls `iframe_input!` again to send on what was read after it.
 
 ## What it does that a bare `tmux attach` does not
 
@@ -64,9 +66,9 @@ terminal, which the host hands over with `mux_attach(f.name; suspend)`.
   nothing else is, because everything else would draw over the host's frame.
 * **One prefix key.** `^]` is the only key the child never gets: with every
   other byte forwarded, Escape and `^C` included, the way out cannot be a key a
-  program would want. `^]q` leaves, `^]K` kills, `^]a` goes full screen, `^]r`
-  rereads, `^]]` sends a literal `^]`, `^]?` says so. A host claims its own keys
-  through `oncommand`, and everything it does not claim stays the package's.
+  program would want. The key after it is handed to the host, which decides
+  what each one means: this finds the prefix - never inside a paste, and across
+  two reads - and nothing more.
 * **A control-mode client, not a process per keystroke.** One `tmux -C attach`
   over a pipe pair: a `tmux` process per key and per frame costs a fork each
   time (~5ms against ~1ms) and has no way to be *told* something changed — it can
@@ -142,7 +144,6 @@ that asks.
 |---|---|
 | `MUX_ENV[]` | the environment variable naming a tmux binary to use instead of the bundled `tmux_jll` one |
 | `IFRAME_PREFIX` | the prefix byte, `^]` |
-| `IFRAME_KEYS` | the bytes after it that are the package's, and a host must not shadow |
 
 ## Windows
 

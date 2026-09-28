@@ -69,9 +69,9 @@ export MuxClient, mux_open, mux_wait, mux_relay!, mux_sync!, mux_ask, mux_captur
        MUX_PIPE, MUX_BELLS, mux_pipe, mux_pipe_open, mux_pipe_close, pipe_session
 export bordered
 export IFrame, iframe, iframe_box, iframe_origin, iframe_sync!, iframe_cursor,
-       iframe_note, iframe_rows, iframe_command!, iframe_input!, iframe_close!,
-       iframe_keys, iframe_wheel!, retarget_mouse,
-       IFRAME_PREFIX, IFRAME_KEYS, WHEEL_ROWS
+       iframe_note, iframe_rows, iframe_input!, iframe_send!, iframe_close!,
+       iframe_wheel!, retarget_mouse,
+       IFRAME_PREFIX, WHEEL_ROWS
 
 include("tmux.jl")
 include("control.jl")

@@ -37,9 +37,9 @@ from state it reads:
     `nothing` and says so in `status`. Whatever the host does about it - an
     editor's file read back - is done once, by the host, which is the one that
     knows what once means.
-  * **full screen**: [`iframe_input!`](@ref) answers `:attach`, and the host
-    calls [`mux_attach`](@ref) with its own way of handing the terminal over,
-    as it takes `:pop` off its own stack.
+  * **a key after the prefix**: [`iframe_input!`](@ref) answers it, and the
+    host does what it means with the tools here - leaving, killing, going full
+    screen with its own way of handing the terminal over ([`mux_attach`](@ref)).
 """
 mutable struct IFrame
     name::String
@@ -189,9 +189,9 @@ end
     iframe_note(f) -> String | Nothing
 
 The footer row, when this has something of its own to say: where in the history
-you are looking, whatever the last key left in `status`, or that the child has
-gone. `nothing` when the child is live and quiet, which is when the host should
-say what its own keys do.
+you are looking, or whatever was left in `status` - that the child has gone,
+among others. `nothing` otherwise, which is when the host should say what its
+own keys do; which keys those are is the host's to know.
 """
 function iframe_note(f::IFrame)
     if f.scroll > 0
@@ -201,10 +201,7 @@ function iframe_note(f::IFrame)
         return string(f.name, " · ", f.scroll, " rows back of ", f.history,
                       " · wheel down or any key returns")
     end
-    isempty(f.status) || return f.status
-    f.client === nothing &&
-        return string(f.name, " · q to leave · K to kill it")
-    nothing
+    isempty(f.status) ? nothing : f.status
 end
 
 """
@@ -218,7 +215,7 @@ function iframe_rows(f::IFrame, w::Int, h::Int; focused::Bool = true,
                      note = nothing)
     body = bordered(f.frame, w, h - 1, f.title, focused)
     n = note === nothing ? iframe_note(f) : note
-    n === nothing && (n = string(f.name, " · ^]q leave it running · ^]? keys"))
+    n === nothing && (n = f.name)
     rows = vcat(body, [string(CHROME[].quiet, afit(String(n), w), CHROME[].reset)])
     while length(rows) < h
         push!(rows, "")
@@ -237,66 +234,15 @@ escape key leaves no way to reach anything else the host can do - killing the
 session, going full screen - which were reachable only after the child had
 already died. One prefix gives all of them back.
 
+This package finds it and nothing more: [`iframe_input!`](@ref) answers the key
+typed after it, and what that key means is the host's. The finding is here
+because the prefix is in the same stream as everything else - a `^]` inside a
+paste is text, and the prefix can end one read with its key in the next.
+
 Written without a space - `^]a`, not `^] a` - because in a line of prose that
 names several of them, a lone `a` reads as the word.
 """
 const IFRAME_PREFIX = 0x1d
-
-"""The bytes after the prefix that this package answers, and a host must not
-shadow: `q`, Escape and Tab leave, `K` kills, `a` goes full screen, `r` rereads,
-`^]` and `]` send a literal prefix through, and `?` asks what they all are.
-
-A host's `oncommand` is asked *first*, so that a key it wants - `^]tab` for
-something drawn beside the child - can be taken back. This is the list to check
-against before doing so.
-"""
-const IFRAME_KEYS = (UInt8('q'), 0x1b, UInt8('\t'), UInt8('K'), UInt8('a'),
-                     UInt8('r'), IFRAME_PREFIX, UInt8(']'), UInt8('?'))
-
-"""What the prefix is for, spelled out. `^]?` asks for it."""
-iframe_keys() =
-    "^]q leave · ^]K kill · ^]a full screen · ^]r reread · ^]] literal"
-
-"""
-    iframe_command!(f, b, box; oncommand) -> :ok | :pop | :attach | :literal
-
-One key after the prefix. `box` is the child's current size, since `^]r`
-re-reads the screen and the size to read it at is the host's to say.
-
-`oncommand` is the host's, called with the byte and returning `:ok`, `:pop` or
-`:unhandled`; it is asked first so a host can claim a key, and must leave
-[`IFRAME_KEYS`](@ref) alone. `:literal` means send the prefix itself through to
-the child. `:attach` is `^]a`, which is the host's to carry out: handing the
-terminal over is a thing only it knows how to do (see [`mux_attach`](@ref)),
-and the sync after it is at the size the host says then.
-"""
-function iframe_command!(f::IFrame, b::UInt8, box::NTuple{2,Int};
-                         oncommand = nothing)
-    if oncommand !== nothing
-        r = oncommand(b)
-        r === :unhandled || return r
-    end
-    if b == UInt8('q') || b == 0x1b || b == UInt8('\t')
-        # Escape and tab too, and not only `q`: a key that means "out of here"
-        # everywhere else should not be one the prefix has no answer for.
-        iframe_close!(f)
-        :pop
-    elseif b == UInt8('K')
-        iframe_close!(f)
-        mux_kill(f.name)
-        :pop
-    elseif b == UInt8('a')
-        :attach
-    elseif b == UInt8('r')
-        iframe_sync!(f, box...)
-        :ok
-    elseif b == IFRAME_PREFIX || b == UInt8(']')
-        :literal
-    else
-        f.status = iframe_keys()
-        :ok
-    end
-end
 
 """How far one notch of the wheel moves, in rows."""
 const WHEEL_ROWS = 3
@@ -412,9 +358,9 @@ function live!(f::IFrame, box::NTuple{2,Int})
 end
 
 """
-    iframe_input!(f, bytes, origin, box; oncommand) -> :ok | :pop | :attach
+    iframe_input!(f, bytes, origin, box) -> :ok | :gone | UInt8
 
-Bytes as typed, straight through to the child.
+Bytes as typed, straight through to the child, up to the key after a prefix.
 
 No key is named, and the only sequence read on the way is a mouse report, whose
 coordinates have to be moved into the child's box - see [`retarget_mouse`](@ref).
@@ -422,9 +368,18 @@ So this is the same amount of code whether the child is a shell, `vi` or
 something not yet written.
 
 The prefix is the one byte held back rather than forwarded, and it is tracked
-across bursts: it can arrive alone, or ahead of its key in the same read.
-`:pop` and `:attach` are answered at once, and what was read after them goes
-with them.
+across bursts: it can arrive alone, or ahead of its key in the same read. The
+key after it is the answer, a `UInt8`, for the host to act on: everything typed
+before the prefix has gone to the child, and everything read after the key is
+kept, to go on the next call - which is the host's to make once it has answered
+the key, with no bytes of its own, unless the key took it somewhere else. The
+tools for the answers are here - [`iframe_close!`](@ref), [`mux_kill`](@ref),
+[`mux_attach`](@ref), [`iframe_sync!`](@ref), [`iframe_send!`](@ref) for the
+prefix itself - and which key is which is the host's.
+
+`:gone` is an iframe with no child any more; the host decides what that means.
+A key that finds the client dead is `:ok`: it is spent on saying the session
+ended, as a sync would have, and the next one is `:gone`.
 
 **A bracketed paste is text, not keys.** A host that turns bracketed paste on
 for its own sake - so that a paste is never read as its commands - hands the
@@ -438,8 +393,8 @@ child asked. Nothing inside a paste is a prefix or a mouse report, and a
 marker cut in two by a read is put back together.
 """
 function iframe_input!(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
-                       box::NTuple{2,Int}; oncommand = nothing)
-    f.client === nothing && return :pop
+                       box::NTuple{2,Int})
+    f.client === nothing && return :gone
     # A key that finds the client dead is the first the host has heard of it,
     # when no wake said so: it is spent on saying the session ended, as a
     # sync would have, and the next one leaves - rather than going to a
@@ -478,8 +433,14 @@ function iframe_input!(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
             # would hold the key.
             k = j === nothing ? cut_marker(view(bytes, i:stop), PASTE_START, 3) : 0
             k > 0 && append!(f.held, view(bytes, stop-k+1:stop))
-            act = typed_input!(f, bytes[i:stop-k], origin, box; oncommand)
-            act === :ok || return act
+            seg = bytes[i:stop-k]
+            p = typed_input!(f, seg, origin, box)
+            if p > 0
+                # The key after the prefix. What follows it is kept raw, as it
+                # was read - mouse reports not yet moved, a paste not yet begun.
+                f.held = bytes[i+p:end]
+                return seg[p]
+            end
             j === nothing && break
             f.pasting = true
             f.brackets = f.client === nothing ? nothing : mux_brackets(f.client)
@@ -490,39 +451,47 @@ function iframe_input!(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
     :ok
 end
 
-"""What was typed, as opposed to pasted: mouse reports moved, the prefix held."""
+"""What was typed, as opposed to pasted, up to a prefix: answers where in
+`bytes` the key after the prefix is, or 0 when there is none - everything went
+to the child, or the prefix ended the read and its key is still to come."""
 function typed_input!(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
-                      box::NTuple{2,Int}; oncommand = nothing)
-    f.client === nothing && return :pop
+                      box::NTuple{2,Int})
+    isempty(bytes) && return 0
+    f.pending && (f.pending = false; return 1)
+    # Split before the mouse reports are moved, which a prefix is never inside:
+    # the bytes after a key go round again, and must be moved once.
+    j = findfirst(==(IFRAME_PREFIX), bytes)
+    typed_send!(f, j === nothing ? bytes : bytes[1:j-1], origin, box)
+    j === nothing && return 0
+    j == length(bytes) && (f.pending = true; return 0)
+    j + 1
+end
+
+"""Typed bytes to the child: mouse reports moved or answered, and the live
+screen back first."""
+function typed_send!(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
+                     box::NTuple{2,Int})
+    isempty(bytes) && return
     was = f.scroll
     bytes = retarget_mouse(f, bytes, origin, box)
     # A scroll is only a different window on the same pane, so nothing wakes to
     # say it happened: the re-read has to be asked for here.
     f.scroll == was || iframe_sync!(f, box...)
-    out = UInt8[]
-    flush!() = begin
-        isempty(out) && return
-        live!(f, box)
-        mux_keys(f.client, out)
-        empty!(out)
-    end
-    for b in bytes
-        if f.pending
-            f.pending = false
-            # Anything typed before the prefix goes first: the child should see
-            # the order it was typed in, whatever the prefix then does.
-            flush!()
-            act = iframe_command!(f, b, box; oncommand)
-            (act === :pop || act === :attach) && return act
-            act === :literal && push!(out, IFRAME_PREFIX)
-        elseif b == IFRAME_PREFIX
-            f.pending = true
-        else
-            push!(out, b)
-        end
-    end
-    flush!()
-    :ok
+    iframe_send!(f, bytes, box)
+    nothing
+end
+
+"""
+    iframe_send!(f, bytes, box) -> Bool
+
+Send `bytes` to the child as keys, back on the live screen first. What a host
+sends for `^]]`: the prefix itself, which [`iframe_input!`](@ref) never does.
+"""
+function iframe_send!(f::IFrame, bytes::AbstractVector{UInt8}, box::NTuple{2,Int})
+    isempty(bytes) && return true
+    live!(f, box)
+    f.client === nothing && return false
+    mux_keys(f.client, bytes)
 end
 
 """

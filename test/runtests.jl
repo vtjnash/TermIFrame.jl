@@ -298,9 +298,10 @@ else
         # screen are the same thing to tmux.
         @test r.attached === true
 
-        # `^]q` lets go of the child and leaves the session running - that is
-        # what a session is for.
-        @test iframe_input!(f, [IFRAME_PREFIX, UInt8('q')], (3, 2), (cols2, rows2)) === :pop
+        # Letting go of the child leaves the session running - that is what a
+        # session is for.
+        @test iframe_input!(f, [IFRAME_PREFIX, UInt8('q')], (3, 2), (cols2, rows2)) === UInt8('q')
+        iframe_close!(f)
         @test mux_alive(n) === true
 
         # A bell rung with nobody attached is kept by tmux until somebody is:
@@ -316,48 +317,50 @@ else
         ring()
         @test row().bell === true
 
-        # `^]K` is the one that ends it.
+        # Killing it is the one that ends it.
         f2 = iframe(n, "demo")
         @test f2 !== nothing
         @test row().attached === true && row().bell === false
         # And with a client looking, a bell marks nothing: it was seen.
         ring()
         @test row().bell === false
-        @test iframe_input!(f2, [IFRAME_PREFIX, UInt8('K')], (3, 2), (cols2, rows2)) === :pop
-        @test mux_alive(n) === false
+        iframe_close!(f2)
+        @test mux_kill(n) && mux_alive(n) === false
     end
 
-    @testset "a host takes the keys it wants and leaves the rest" begin
+    @testset "the key after the prefix is the host's" begin
+        # A child that records what reaches it.
         n = mux_name(P, "test", "keys")
         mux_kill(n)
-        mux_start(n, pwd(), "sleep 120")
-        f = iframe(n, "demo")
+        out = tempname()
+        mux_start(n, pwd(), string("sh -c 'stty raw -echo; cat > ", out, "'"))
+        f = iframe(n, "keys")
         box = iframe_box(80, 24)
+        sleep(0.5)
         iframe_sync!(f, box...)
-
-        seen = UInt8[]
-        oncommand = b -> begin
-            b == UInt8('\t') && (push!(seen, b); return :ok)
-            b in IFRAME_KEYS && return :unhandled
-            push!(seen, b)
-            :ok
-        end
-        # A key the host claims does not leave, even though the package's own
-        # answer to it would be to.
-        @test iframe_input!(f, [IFRAME_PREFIX, UInt8('\t')], (3, 2), box;
-                            oncommand) === :ok
-        @test seen == [UInt8('\t')]
-        # One it does not name is the package's, and `^]?` says what those are.
-        @test iframe_input!(f, [IFRAME_PREFIX, UInt8('?')], (3, 2), box;
-                            oncommand) === :ok
-        @test f.status == iframe_keys()
-        # And anything left over reaches the host.
-        @test iframe_input!(f, [IFRAME_PREFIX, UInt8('o')], (3, 2), box;
-                            oncommand) === :ok
-        @test seen == [UInt8('\t'), UInt8('o')]
-
+        b(s) = collect(codeunits(s))
+        # What was typed before the prefix goes to the child; the key after it
+        # is the answer; what was read after the key waits for the host.
+        @test iframe_input!(f, vcat(b("ab"), [IFRAME_PREFIX], b("zcd")), (3, 2), box) === UInt8('z')
+        @test f.held == b("cd")
+        # The host answers the key and sends on the rest, with nothing new.
+        @test iframe_input!(f, UInt8[], (3, 2), box) === :ok && isempty(f.held)
+        # A prefix that ends one read has its key in the next.
+        @test iframe_input!(f, vcat(b("e"), [IFRAME_PREFIX]), (3, 2), box) === :ok && f.pending
+        @test iframe_input!(f, b("?f"), (3, 2), box) === UInt8('?') && !f.pending
+        @test iframe_input!(f, UInt8[], (3, 2), box) === :ok
+        # The prefix itself reaches the child only when the host sends it.
+        @test iframe_send!(f, [IFRAME_PREFIX], box)
+        sleep(0.5)
+        @test read(out, String) == string("abcdef", Char(IFRAME_PREFIX))
+        # With the child gone, a key is spent saying so, and then there is none.
         iframe_close!(f)
         mux_kill(n)
+        sleep(0.2)
+        @test iframe_input!(f, b("x"), (3, 2), box) === :ok
+        @test f.client === nothing && occursin("session ended", f.status)
+        @test iframe_input!(f, b("x"), (3, 2), box) === :gone
+        rm(out; force = true)
     end
 
     @testset "the wheel over a child that ignores it" begin
@@ -509,24 +512,12 @@ else
         # A later sync has nothing to find: what the host does about the end is
         # done once, by the host, from the first one.
         @test iframe_sync!(f, box...) === false
+        # What to do about it is the host's to say, and so are its keys.
         f.status = ""
-        @test occursin(n, iframe_note(f)) && occursin("K to kill", iframe_note(f))
+        @test iframe_note(f) === nothing
         # And the box still draws with no child behind it.
         out = iframe_rows(f, 40, 10)
         @test length(out) == 10 && all(awidth(r) == 40 for r in out)
-        mux_kill(n)
-    end
-
-    @testset "full screen is the host's to carry out" begin
-        n = mux_name(P, "test", "attach")
-        mux_kill(n)
-        mux_start(n, pwd(), "sleep 120")
-        f = iframe(n, "demo")
-        box = iframe_box(80, 24)
-        # `^]a` asks; what is read after it goes with it.
-        @test iframe_input!(f, [IFRAME_PREFIX, UInt8('a'), UInt8('x')], (3, 2), box) === :attach
-        @test !f.pending && f.client !== nothing
-        iframe_close!(f)
         mux_kill(n)
     end
 
