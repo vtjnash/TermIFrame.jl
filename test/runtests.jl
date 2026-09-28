@@ -446,6 +446,121 @@ else
         mux_kill(n)
     end
 
+    @testset "copy mode's coordinates, as tmux counts them" begin
+        # The copy mode a drag over a child that ignores the mouse is meant to
+        # drive is tmux's own, since tmux is what knows a wrapped line from two.
+        # But `capture-pane` reads the pane's grid and never the mode's screen,
+        # and a control client cannot hand tmux a mouse event with a position
+        # (`send-keys -K` zeroes it, `-M` replays only a bound one) - so the
+        # mode is driven by its commands and drawn here from its formats. These
+        # are the facts that rests on, measured on 3.5a.
+        n = mux_name(P, "test", "copymode")
+        mux_kill(n)
+        # 500 numbered lines, one line that wraps at 40 columns, and `tail`.
+        mux_start(n, pwd(), "sh -c 'seq 1 500; seq -s x 1 30; echo tail; sh'")
+        f = iframe(n, "sh")
+        box = (40, 10)
+        for _ in 1:40
+            iframe_sync!(f, box...)
+            f.history > 100 && any(startswith("tail"), astrip.(f.frame)) && break
+            sleep(0.25)
+        end
+        c, t = f.client, string(" -t =", n, ":")
+        # The view: rows 0-5 are 495-500, 6 and 7 the wrapped line, 8 `tail`.
+        rows = astrip.(f.frame)
+        @test rows[1] == "495" && rows[9] == "tail"
+        @test length(rows[7]) == 40 && startswith(rows[8], "7x18x")
+        hist = f.history
+        x!(cmd, k = 0) = first(mux_ask(c, string("send -X", k > 0 ? " -N $k" : "", t, " ", cmd)))
+        state() = split(only(last(mux_ask(c, string("display-message -p", t,
+            " '#{pane_in_mode},#{scroll_position},#{copy_cursor_x},#{copy_cursor_y},",
+            "#{selection_present},#{selection_start_x},#{selection_start_y},",
+            "#{selection_end_x},#{selection_end_y},#{history_size},#{selection_active}'")))), ',')
+        num(s) = parse(Int, s)
+        # Emacs keys, whatever the server's config says: the two differ in
+        # whether the cell under the cursor is inside the selection (below).
+        @test first(mux_ask(c, string("set -w", t, " mode-keys emacs")))
+
+        @test first(mux_ask(c, "copy-mode" * t))
+        s = state()
+        @test s[1] == "1" && s[2] == "0"          # in the mode, not scrolled
+        @test num(s[10]) == hist                  # the same history the frame counts
+
+        # `copy_cursor_y` is a row of the view; `selection_*_y` is a line of the
+        # whole grid, the oldest line of history being 0 - so a view row `r`
+        # scrolled back `s` is line `history - s + r`.
+        @test x!("top-line") && x!("cursor-down", 5) && x!("cursor-right", 2)
+        s = state()
+        @test (num(s[3]), num(s[4])) == (2, 5)
+        @test x!("begin-selection")
+        s = state()
+        # Begun and still empty: active, but not yet present - so it is
+        # `active` that says a drag is under way, and `present` that there is
+        # anything to draw.
+        @test s[11] == "1" && s[5] == "0"
+        @test (num(s[6]), num(s[7])) == (2, hist + 5)
+
+        # A step down is a row of the screen: a wrapped line is two of them.
+        @test x!("cursor-down", 2) && x!("cursor-right", 3)
+        s = state()
+        @test (num(s[3]), num(s[4])) == (5, 7)
+        @test s[5] == "1"
+        @test (num(s[8]), num(s[9])) == (5, hist + 7)   # the end follows the cursor
+
+        # Scrolled back, the cursor keeps its view row and the grid line under
+        # it changes - which is the same arithmetic run the other way.
+        @test x!("scroll-up", 7)
+        s = state()
+        @test num(s[2]) == 7 && num(s[4]) == 7
+        @test num(s[9]) == hist - 7 + 7
+        @test x!("scroll-down", 7)
+
+        # What is copied is tmux's to say, and a wrapped line comes out whole.
+        # With emacs keys the end is exclusive: the cursor sat on column 5 of
+        # `7x18x19...`, and `7x18x` is columns 0-4.
+        @test x!("top-line") && x!("cursor-down", 7) && x!("cursor-right", 5)
+        @test x!("copy-selection-and-cancel")
+        ok, buf = mux_ask(c, "show-buffer")
+        @test ok && join(buf, "\n") == "0\n" * rows[7] * "7x18x"
+        # The server is yours, so the buffer made here is not left in its list.
+        @test first(mux_ask(c, "delete-buffer"))
+        @test state()[1] == "0"                   # and the mode is gone
+
+        # `cursor-right` stops at a line's end and one more step wraps it to
+        # the next row, so a column past the end has to be clamped to the
+        # line's width before it becomes a count: `tail` is four wide, and
+        # four steps land on its end where five land on the prompt below.
+        @test first(mux_ask(c, "copy-mode" * t))
+        @test x!("top-line") && x!("cursor-down", 8) && x!("cursor-right", 4)
+        s = state()
+        @test (num(s[3]), num(s[4])) == (4, 8)
+        @test x!("cursor-right")
+        s = state()
+        @test (num(s[3]), num(s[4])) == (0, 9)
+        # A step down onto a shorter row clamps the column the same way.
+        @test x!("top-line") && x!("cursor-down", 7) && x!("cursor-right", 30)
+        @test x!("cursor-down")
+        s = state()
+        @test (num(s[3]), num(s[4])) == (4, 8)
+        @test x!("cancel")
+
+        # And whose keys decides the end: one step right of `t` copies `t`
+        # with emacs keys and `ta` with vi's, so a highlight drawn from the
+        # formats has to ask `mode-keys` which one it is showing.
+        for (keys, want) in (("emacs", "t"), ("vi", "ta"))
+            @test first(mux_ask(c, string("set -w", t, " mode-keys ", keys)))
+            @test first(mux_ask(c, "copy-mode" * t))
+            @test x!("top-line") && x!("cursor-down", 8)
+            @test x!("begin-selection") && x!("cursor-right")
+            @test x!("copy-selection-and-cancel")
+            @test only(last(mux_ask(c, "show-buffer"))) == want
+            @test first(mux_ask(c, "delete-buffer"))
+        end
+
+        iframe_close!(f)
+        mux_kill(n)
+    end
+
     @testset "a paste is bracketed only for a child that asked" begin
         # Two children that record what reaches them; one of them turns
         # bracketed paste on, as a shell's line editor or an agent does.
