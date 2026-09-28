@@ -411,6 +411,14 @@ function retarget_mouse(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
                     end
                     i = j + 1
                     continue
+                elseif length(fs) == 3 && !in(0x1b, view(bytes, i+3:j-1))
+                    # A report with its numbers missing - xterm.js sends
+                    # `\e[<0;NaN;NaNm` for a button let go over a terminal
+                    # it cannot place, a pane not on screen - is still a
+                    # report, and no child asked for it as text: passed on,
+                    # a shell prints `0;NaN;NaNm`.
+                    i = j + 1
+                    continue
                 end
             end
         end

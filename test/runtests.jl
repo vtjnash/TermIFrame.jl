@@ -446,6 +446,18 @@ else
         mux_kill(n)
     end
 
+    @testset "a mouse report with no numbers in it is dropped" begin
+        # xterm.js reports a button let go over a terminal it cannot place as
+        # `0;NaN;NaN`, and passed on as bytes a shell printed it. Wanted or
+        # not, it is nobody's text; what is around it still goes through.
+        f = IFrame("n", "t")
+        for want in (false, true)
+            f.wantsmouse = want
+            @test retarget_mouse(f, collect(codeunits("a\e[<0;NaN;NaNmb")), (0, 0), (80, 24)) ==
+                  collect(codeunits("ab"))
+        end
+    end
+
     @testset "copy mode's coordinates, as tmux counts them" begin
         # The copy mode a drag over a child that ignores the mouse is meant to
         # drive is tmux's own, since tmux is what knows a wrapped line from two.
