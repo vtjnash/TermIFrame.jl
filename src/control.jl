@@ -606,7 +606,7 @@ end
 # where the same command down a control client is a few hundredths of one. A
 # control client has to be attached to stay open - with any other command
 # `tmux -C` runs it and exits - and attaching to a session of ours counts as
-# looking at it and clears its bell. So the pipe is parked on a hidden session
+# looking at it and clears its bell. So the pipe is parked on a session
 # of its own, named outside the prefix, where a session beside it was left
 # `attached=0` with its bell standing (measured on 3.5a).
 #
@@ -629,9 +629,9 @@ function mux_pipe()
     (c === nothing || c.dead) ? nothing : c
 end
 
-"""The hidden session a process parks its pipe on: `_<prefix>-ctl-<pid>`,
-outside the prefix, so that [`mux_sessions`](@ref) and [`mux_list`](@ref) do
-not count it."""
+"""The session a process parks its pipe on: `_<prefix>-ctl-<pid>`, outside
+the prefix, so that [`mux_sessions`](@ref) and [`mux_list`](@ref) do not count
+it. Not hidden: `tmux ls` shows it like any other."""
 pipe_session(prefix::AbstractString, pid::Integer = getpid()) =
     string("_", prefix, "-ctl-", pid)
 
@@ -640,7 +640,7 @@ standing, as their ids. tmux checks it once a second and says
 `%subscription-changed` when the answer differs, which is how a host hears a
 bell without listing the sessions on a clock. The `S:` loop is over every
 session on the server, where a subscription is otherwise about the session the
-client is attached to - the hidden one."""
+client is attached to - the pipe's own."""
 bell_format(prefix::AbstractString) =
     string("#{S:#{?#{&&:#{m:", prefix, "-*,#{session_name}},#{window_bell_flag}},#{session_id} ,}}")
 
@@ -659,7 +659,7 @@ launch, or just started - and closes it when the last one ends
 ([`mux_pipe_close`](@ref)); a pipe with nothing left to ask about would keep a
 server up for itself.
 
-The hidden session runs `cat`, which waits on a terminal nobody types into, and
+The pipe's session runs `cat`, which waits on a terminal nobody types into, and
 its client is `no-output,ignore-size`: nothing it shows is read, and its size is
 nobody's business. It ends with its client: `destroy-unattached` is set once the
 client is on it - set on a session with nobody attached it ends it on the spot
@@ -689,7 +689,7 @@ function mux_pipe_open(prefix::AbstractString)
     c
 end
 
-"""End the hidden sessions of pipes whose process is gone: a host that died
+"""End the sessions of pipes whose process is gone: a host that died
 after starting one and before its client was on it. Not our own, and not one
 whose name does not end in a pid."""
 function mux_pipe_sweep(prefix::AbstractString)
@@ -711,7 +711,7 @@ pid_alive(pid::Integer) =
 """
     mux_pipe_close()
 
-Close the command pipe, if one is open, and end its hidden session: when the
+Close the command pipe, if one is open, and end its session: when the
 host's last session has ended, and when the host exits. Commands are spawned
 again from here on. Closing the client ends the session by itself
 (`destroy-unattached`); the `kill-session` after it is for a server on which

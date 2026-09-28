@@ -134,8 +134,9 @@ mux_pipe_close()    # when the last session has ended, and on exit
 ```
 
 A control client has to be attached to stay open, and attaching to a session
-clears its bell, so the pipe is parked on a hidden session of its own,
-`_<prefix>-ctl-<pid>`, which ends with it. It also subscribes to the bells of
+clears its bell, so the pipe is parked on a session of its own,
+`_<prefix>-ctl-<pid>`, which ends with it. `tmux ls` shows it like any other;
+the host's listings skip it, since it is named outside the prefix. It also subscribes to the bells of
 every session under that prefix: `mux_wait` on the pipe returns when one rings
 or is heard, or when a session starts or ends (`sessions` on the client), so a
 host hears a bell without listing the sessions on a clock. `switch-client` and

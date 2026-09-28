@@ -527,13 +527,13 @@ else
         n = mux_name(P, "test", "pipe")
         mux_kill(n)
         mux_start(n, pwd(), "sleep 120")
-        hidden = pipe_session(P)
+        parked = pipe_session(P)
         c = mux_pipe_open(P)
         @test c !== nothing && mux_pipe() === c && mux_pipe_open(P) === c
         @test c.bells                          # 3.2 and up
         # Outside the prefix: not ours to list, and not counted as one of ours.
-        @test !(hidden in mux_sessions(P)) && n in mux_sessions(P)
-        @test mux_alive(hidden)
+        @test !(parked in mux_sessions(P)) && n in mux_sessions(P)
+        @test mux_alive(parked)
         # Commands go down it, and answer as a process would.
         before = c.outputs
         @test mux_alive(n) && !mux_alive(n * "-nope")
@@ -562,11 +562,11 @@ else
             @async g[] = strip(last(mux("display-message", "-p", string("q", i))))
         end
         @test [g[] for g in got] == [string("q", i) for i in 1:50]
-        # Closing ends the hidden session with it, and commands spawn again:
+        # Closing ends its session with it, and commands spawn again:
         # a pipe with nothing left to ask about must not keep a server up.
         mux_pipe_close()
         @test c.dead && mux_pipe() === nothing
-        @test !mux_alive(hidden)
+        @test !mux_alive(parked)
     end
 
     @testset "a pipe's session outlives only a live host" begin
@@ -583,9 +583,9 @@ else
         @test c !== nothing && !mux_alive(dead)
         # And one whose client goes away takes its session with it, which is
         # how a host that is killed leaves nothing behind.
-        hidden = c.name
+        parked = c.name
         close(c.proc.in)
-        @test timedwait(() -> !mux_alive(hidden), 5.0) === :ok
+        @test timedwait(() -> !mux_alive(parked), 5.0) === :ok
         mux_pipe_close()
         mux_kill(n)
     end
