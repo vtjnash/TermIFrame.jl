@@ -865,6 +865,13 @@ else
         @test timedwait(() -> strip(get(c.subs, MUX_BELLS, "")) == r.id, 5.0) === :ok
         @test mux_seen!(n)
         @test timedwait(() -> isempty(strip(get(c.subs, MUX_BELLS, "x"))), 5.0) === :ok
+        # And a title, which a child retitling its pane changes, and nothing
+        # else: the session by id, with the words.
+        @test timedwait(() -> haskey(c.subs, MUX_TITLES), 5.0) === :ok
+        @test strip(c.subs[MUX_TITLES]) == string(r.id, "=")
+        @test first(mux("select-pane", "-t", string("=", n, ":"), "-T", "a, b"))
+        @test timedwait(() -> strip(get(c.subs, MUX_TITLES, "")) == string(r.id, "=a, b"),
+                        5.0) === :ok
         # A session starting or ending is a notice too.
         c.sessions = false
         mux_kill(n)

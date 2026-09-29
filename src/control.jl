@@ -775,6 +775,17 @@ bell_format(prefix::AbstractString) =
 """The name the bell subscription is kept under in the pipe's `subs`."""
 const MUX_BELLS = "bells"
 
+"""The other subscription the pipe asks for: every session under `prefix`, by
+id, with its pane's title ([`TITLE_FORMAT`](@ref)). Nothing reads the value
+but the change: a child retitling its pane - an agent naming its conversation
+at the first prompt, or clearing it - wakes the host within the second, as a
+bell does, and the host lists the sessions for what they say now."""
+titles_format(prefix::AbstractString) =
+    string("#{S:#{?#{m:", prefix, "-*,#{session_name}},#{session_id}=", TITLE_FORMAT, " ,}}")
+
+"""The name the title subscription is kept under in the pipe's `subs`."""
+const MUX_TITLES = "titles"
+
 """
     mux_pipe_open(prefix) -> MuxClient | Nothing
 
@@ -797,6 +808,7 @@ and the next to open a pipe ends it, since it would keep the server up.
 
 The bell subscription ([`bell_format`](@ref)), for `prefix`, is asked for here; `bells` on the
 client says whether it took, which a server before 3.2 would refuse. The
+title subscription ([`titles_format`](@ref)) beside it, where that one took. The
 terminal's background, if the host has heard it, goes on every pane under
 `prefix` ([`mux_bg!`](@ref)). Answers
 `nothing` where there is no tmux or the attach failed, and [`mux`](@ref) goes on
@@ -815,6 +827,8 @@ function mux_pipe_open(prefix::AbstractString)
     mux_ask(c, mux_line(["set", "-t", name, "destroy-unattached", "on"]))
     c.bells = first(mux_ask(c, mux_line(["refresh-client", "-B",
                                          string(MUX_BELLS, "::", bell_format(prefix))])))
+    c.bells && mux_ask(c, mux_line(["refresh-client", "-B",
+                                    string(MUX_TITLES, "::", titles_format(prefix))]))
     MUX_PIPE[] = c
     MUX_OLDER[] = mux_older(c)
     # Panes that were running before there was a pipe to seed them down.
