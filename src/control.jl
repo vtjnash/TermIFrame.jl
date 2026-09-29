@@ -528,7 +528,7 @@ struct CopyMode
 end
 
 """
-    mux_pane_state(c) -> (x, y, showing, mouse, history, alt, copy, dead)
+    mux_pane_state(c) -> (x, y, showing, mouse, history, alt, copy, dead, title)
 
 What the pane knows that its screen does not say.
 
@@ -552,6 +552,9 @@ scrollback while one is up.
 is not in one - including when it is in some other mode, which draws nothing
 this can read.
 
+`title` is the pane's title as the child set it, `""` where it never did
+([`TITLE_FORMAT`](@ref)).
+
 `dead` is the child's exit status when it has exited and the server kept the
 pane (`remain-on-exit`, which [`mux_start`](@ref) sets for a failure), and
 `nothing` while it runs.
@@ -569,11 +572,13 @@ function mux_pane_state(c::MuxClient)
         "#{pane_mode},#{scroll_position},#{copy_cursor_x},#{copy_cursor_y}," *
         "#{selection_present},#{selection_start_x},#{selection_start_y}," *
         "#{selection_end_x},#{selection_end_y},#{rectangle_toggle},#{mode-keys}," *
-        "#{pane_dead},#{pane_dead_status}'"))
-    none = (0, 0, false, false, 0, false, nothing, nothing)
+        "#{pane_dead},#{pane_dead_status}," * TITLE_FORMAT * "'"))
+    none = (0, 0, false, false, 0, false, nothing, nothing, "")
     (ok && !isempty(lines)) || return none
-    f = split(strip(lines[1]), ',')
-    length(f) == 19 || return none
+    # The title last and the split limited, as in `mux_list`: a comma in it
+    # is the child's.
+    f = split(chomp(lines[1]), ','; limit = 20)
+    length(f) == 20 || return none
     num(i) = something(tryparse(Int, f[i]), 0)
     # `view-mode` is copy mode too - what `run-shell` output is shown in.
     copy = f[7] in ("copy-mode", "view-mode") ?
@@ -582,7 +587,8 @@ function mux_pane_state(c::MuxClient)
                  f[16] == "1", f[17] == "vi") : nothing
     # A child killed by a signal has no status; it failed all the same.
     dead = f[18] == "1" ? something(tryparse(Int, f[19]), -1) : nothing
-    (num(1), num(2), f[3] == "1", f[4] == "1", num(5), f[6] == "1", copy, dead)
+    (num(1), num(2), f[3] == "1", f[4] == "1", num(5), f[6] == "1", copy, dead,
+     String(f[20]))
 end
 
 """

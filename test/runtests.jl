@@ -293,6 +293,19 @@ else
         @test mux_tag!(n; url = "https://example.com/1", item = "x;")
         r = only(filter(x -> x.name == n, mux_list(P, tags)))
         @test r.tags[3:4] == ["x;", "https://example.com/1"]
+        # A title the child never set is the host name, which says nothing.
+        @test r.title == "" && f.childtitle == ""
+        # One it did is read back whole, the separators of both formats in it
+        # and all, and goes on the iframe's border after the host's own.
+        # `select-pane -T` is what an OSC 2 from the child does.
+        t = "\u2733 Count, to forty"
+        @test first(mux("select-pane", "-t", string("=", n, ":"), "-T", t))
+        r = only(filter(x -> x.name == n, mux_list(P, tags)))
+        @test r.title == t
+        @test r.tags == [pwd(), "shell", "x;", "https://example.com/1"]
+        iframe_sync!(f, cols2, rows2)
+        @test f.childtitle == t
+        @test occursin(string("demo  \u00b7  ", t), first(iframe_rows(f, 120, 40)))
         # The id is the session's, whatever it is called.
         @test mux_rename(n, n * "-r")
         @test only(filter(x -> x.name == n * "-r", mux_list(P))).id == r.id

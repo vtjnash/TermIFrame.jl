@@ -357,13 +357,24 @@ function mux_sessions(prefix::AbstractString)
     filter(n -> startswith(n, p), split(strip(out), '\n'; keepempty = false))
 end
 
+"""The pane's title, as the child set it (OSC 0 or 2), or empty where it never
+did: tmux starts a pane titled with the host name, which says nothing about
+what is in it. A format and not a comparison after the fact, so the host name
+is the server's, whichever machine is asking. Last in any format it is in,
+since it is the child's words and may carry the separator. Never a control
+character: tmux refuses a title with one in it and keeps the one before
+(measured, 3.5a)."""
+const TITLE_FORMAT = "#{?#{==:#{pane_title},#{host}},,#{pane_title}}"
+
 """One session, as [`mux_list`](@ref) reads it.
 
 `id` is the server's own for the session, `\$3`: it stays put through a
 rename, which the name does not, and is never reused while the server runs -
 a restart starts over at `\$0`, but a restart ends every session too. `tags`
 are the values of the user options `mux_list` was asked for, in that order,
-`""` for one never set; what they mean is the host's.
+`""` for one never set; what they mean is the host's. `title` is the pane's
+title as its child set it, `""` where it never did ([`TITLE_FORMAT`](@ref)): an
+agent that names its conversation there says what it is doing.
 """
 struct MuxRow
     name::String
@@ -372,6 +383,7 @@ struct MuxRow
     attached::Bool
     bell::Bool
     tags::Vector{String}
+    title::String
 end
 
 """
@@ -407,19 +419,20 @@ function mux_list(prefix::AbstractString,
                   tags::AbstractVector{<:AbstractString} = String[])
     fmt = join(vcat(["#{session_name}", "#{session_id}", "#{pane_current_command}",
                      "#{session_attached}", "#{window_bell_flag}"],
-                    String["#{@" * t * "}" for t in tags]), '\t')
+                    String["#{@" * t * "}" for t in tags], [TITLE_FORMAT]), '\t')
     ok, out = mux("list-panes", "-a",
                   "-f", "#{&&:#{window_active},#{pane_active}}", "-F", fmt)
     ok || return MuxRow[]
-    n = 5 + length(tags)
+    n = 6 + length(tags)
     p = string(prefix, "-")
     rows = MuxRow[]
     for line in split(out, '\n'; keepempty = false)
-        f = split(line, '\t')
+        # The title last and the split limited: it is the child's own words.
+        f = split(line, '\t'; limit = n)
         length(f) == n || continue
         startswith(f[1], p) || continue
         push!(rows, MuxRow(String(f[1]), String(f[2]), String(f[3]), f[4] != "0", f[5] == "1",
-                           String[String(x) for x in f[6:end]]))
+                           String[String(x) for x in f[6:(end - 1)]], String(f[end])))
     end
     sort!(rows; by = r -> r.name)
     rows

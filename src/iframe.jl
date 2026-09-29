@@ -69,6 +69,8 @@ mutable struct IFrame
     dragging::Bool                 # that press has become a selection
     exited::Union{Nothing,Int}     # the child's exit status, when it failed and
                                    # the server kept its pane to show why
+    childtitle::String             # the title the child set, drawn on the
+                                   # border after `title`; "" where it never did
 end
 
 """
@@ -83,7 +85,7 @@ box, the footer, which keys are whose - answers the same way either way.
 IFrame(name::AbstractString, title::AbstractString = "") =
     IFrame(String(name), String(title), nothing, String[], (0, 0), "", false,
            (0, 0, false), false, 0, 0, false, false, nothing, UInt8[], UInt8[],
-           nothing, nothing, false, nothing)
+           nothing, nothing, false, nothing, "")
 
 """
     iframe(name, title; pause = PAUSE_AFTER) -> IFrame | Nothing
@@ -107,7 +109,7 @@ function iframe(name::AbstractString, title::AbstractString; pause::Integer = PA
     c === nothing && return nothing
     IFrame(String(name), String(title), c, String[], (0, 0), "", false,
            (0, 0, false), false, 0, 0, false, false, nothing, UInt8[], UInt8[],
-           nothing, nothing, false, nothing)
+           nothing, nothing, false, nothing, "")
 end
 
 """How long, in seconds, a pane's output can go unread before the server pauses
@@ -171,7 +173,7 @@ function iframe_sync!(f::IFrame, cols::Integer, rows::Integer)
     end
     # The state first, since copy mode says how far back to read: its view is
     # the one on screen while it is up, whatever our own scroll was.
-    cx, cy, showing, mouse, hist, alt, copy, dead = mux_pane_state(f.client)
+    cx, cy, showing, mouse, hist, alt, copy, dead, f.childtitle = mux_pane_state(f.client)
     lines = mux_capture(f.client; scroll = copy === nothing ? f.scroll : copy.scroll,
                         rows = last(f.sized))
     if dead !== nothing && !f.client.dead
@@ -338,7 +340,11 @@ own keys on the last row.
 """
 function iframe_rows(f::IFrame, w::Int, h::Int; focused::Bool = true,
                      note = nothing)
-    body = bordered(f.frame, w, h - 1, f.title, focused)
+    # The child's title after the host's: the host's says which session this
+    # is, the child's what is going on in it - an agent names its conversation
+    # there. Cut from the right by `bordered`, so the host's is what stays.
+    title = isempty(f.childtitle) ? f.title : string(f.title, "  \u00b7  ", f.childtitle)
+    body = bordered(f.frame, w, h - 1, title, focused)
     n = note === nothing ? iframe_note(f) : note
     n === nothing && (n = f.name)
     rows = vcat(body, [string(CHROME[].quiet, afit(String(n), w), CHROME[].reset)])
