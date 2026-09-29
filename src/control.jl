@@ -738,7 +738,7 @@ end
 # of its own, named outside the prefix, where a session beside it was left
 # `attached=0` with its bell standing (measured on 3.5a).
 #
-# One per process, which for a host is one per browser: a global. Opened for
+# One per process, and so a global. Opened for
 # one prefix, whose bells it hears; a process with sessions under two prefixes
 # has not needed a pipe for each yet. Separate from any iframe's client - a pane's client ends with its
 # session, and one client for both would `switch-client` from session to
@@ -757,8 +757,11 @@ function mux_pipe()
     (c === nothing || c.dead) ? nothing : c
 end
 
-"""The session a process parks its pipe on: `_<prefix>-ctl-<pid>`, outside
-the prefix, so that [`mux_sessions`](@ref) and [`mux_list`](@ref) do not count
+"""
+    pipe_session(prefix, pid = getpid()) -> String
+
+The session a process parks its pipe on: `_<prefix>-ctl-<pid>`, outside the
+prefix, so that [`mux_sessions`](@ref) and [`mux_list`](@ref) do not count
 it. Not hidden: `tmux ls` shows it like any other."""
 pipe_session(prefix::AbstractString, pid::Integer = getpid()) =
     string("_", prefix, "-ctl-", pid)
@@ -858,7 +861,10 @@ function mux_older(c::MuxClient)
     a === nothing || b === nothing || a >= b ? ("", "") : (String(server), String(ours))
 end
 
-"""A tmux version as something to compare: `3.5a` is `(3, 5, 'a')`, and `3.5`
+"""
+    mux_version(v) -> Tuple | Nothing
+
+A tmux version as something to compare: `3.5a` is `(3, 5, 'a')`, and `3.5`
 `(3, 5, ' ')`, before it; `next-3.6` is 3.6. `nothing` for anything else."""
 function mux_version(v::AbstractString)
     m = match(r"(\d+)\.(\d+)([a-z]?)", v)

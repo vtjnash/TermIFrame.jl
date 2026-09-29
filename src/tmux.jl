@@ -13,7 +13,10 @@ told to export is spelled after the program they are running.
 """
 const MUX_ENV = Ref("TERMIFRAME_TMUX")
 
-"""The binary `tmux_jll` ships, or `nothing` on a platform it has no build for.
+"""
+    bundled_tmux() -> String | Nothing
+
+The binary `tmux_jll` ships, or `nothing` on a platform it has no build for.
 
 A dependency rather than a line in a README, because a package whose whole
 subject is running a program in a tmux session should not be the thing that
@@ -110,7 +113,7 @@ Empty parts are dropped, and `kind` is appended unless it is `:shell`, so a
 shell and an agent in the same place are two different names.
 
 tmux does not reject `.` or `:` in a session name, it silently rewrites them to
-`_`, so `wl-Distributed.jl-198` is created and then cannot be found under the
+`_`, so `app-Distributed.jl-198` is created and then cannot be found under the
 name it was asked for. Doing the same substitution here means the name held on
 this side is the name the server holds. `/` it leaves alone, which is what lets
 a branch keep its owner prefix.
@@ -321,7 +324,7 @@ gets opened on the same checkout. So the name is a label and these are the
 identity. Each keyword becomes a `@`-prefixed user option on the session, which
 [`mux_list`](@ref) reads back.
 
-    mux_tag!(name; worktree = path, kind = :agent, item = "julia#123")
+    mux_tag!(name; worktree = path, kind = :agent, item = "owner/repo#123")
 
 One `mux` for all of them: one process joined by `;`, or one line each down
 the pipe. A value ending in `;` is the character, however it goes - see

@@ -140,9 +140,10 @@ second column.
 iframe_origin(x::Integer, y::Integer) = (Int(x) + 2, Int(y) + 1)
 
 """
-    iframe_sync!(f, cols, rows) -> Bool
+    iframe_sync!(f, box) -> Bool
 
-Give the child the size it is being drawn at, and read its screen back.
+Give the child the size it is being drawn at, `(cols, rows)` from
+[`iframe_box`](@ref), and read its screen back.
 
 Kept apart from drawing, which should be a pure function of what this leaves
 behind: a host redraws far more often than the child changes.
@@ -155,7 +156,7 @@ terminal a person is looking at is the next thing up. Here and not on the
 reader: the host's own task, between its frames, is the one place nothing else
 is writing.
 """
-function iframe_sync!(f::IFrame, cols::Integer, rows::Integer)
+function iframe_sync!(f::IFrame, box::NTuple{2,Int})
     f.client === nothing && return false
     relay = mux_relay!(f.client)
     isempty(relay) || try
@@ -167,7 +168,6 @@ function iframe_sync!(f::IFrame, cols::Integer, rows::Integer)
     # A pane the server paused while this was not reading is continued before
     # its screen is read, and the read is the resync.
     mux_continue!(f.client)
-    box = (Int(cols), Int(rows))
     if box != f.sized
         mux_resize(f.client, box[1], box[2]) && (f.sized = box)
     end
@@ -285,6 +285,10 @@ end
 Where the terminal's own cursor belongs, given the child's `origin` from
 [`iframe_origin`](@ref) and its size from [`iframe_box`](@ref).
 
+Row first, the other way round from `origin` and `box`, because it is an answer
+for a different reader: those are read against mouse reports, which are `x;y`,
+and this goes to `\e[row;colH`, which is not.
+
 Putting the real cursor on the child's beats painting a facsimile, which cannot
 blink and ignores whatever shape the user chose. Nothing when the child is
 hiding it, when there is no child, or when it would land outside the box - a
@@ -332,22 +336,24 @@ function iframe_note(f::IFrame)
 end
 
 """
-    iframe_rows(f, w, h; focused, note) -> Vector{String}
+    iframe_rows(f, w, h; focused = true, note = nothing, box = boxstyle(),
+                chrome = CHROME[]) -> Vector{String}
 
 The whole iframe: `h` rows of exactly `w` display columns, border and footer
 included. `note` overrides [`iframe_note`](@ref), which is how a host puts its
-own keys on the last row.
+own keys on the last row. `focused`, `box` and `chrome` are
+[`bordered`](@ref)'s, and the footer is painted in the same `chrome`.
 """
 function iframe_rows(f::IFrame, w::Int, h::Int; focused::Bool = true,
-                     note = nothing)
+                     note = nothing, box = boxstyle(), chrome = CHROME[])
     # The child's title after the host's: the host's says which session this
     # is, the child's what is going on in it - an agent names its conversation
     # there. Cut from the right by `bordered`, so the host's is what stays.
     title = isempty(f.childtitle) ? f.title : string(f.title, "  \u00b7  ", f.childtitle)
-    body = bordered(f.frame, w, h - 1, title, focused)
+    body = bordered(f.frame, w, h - 1, title; focused, box, chrome)
     n = note === nothing ? iframe_note(f) : note
     n === nothing && (n = f.name)
-    rows = vcat(body, [string(CHROME[].quiet, afit(String(n), w), CHROME[].reset)])
+    rows = vcat(body, [string(chrome.quiet, afit(String(n), w), chrome.reset)])
     while length(rows) < h
         push!(rows, "")
     end
@@ -401,7 +407,7 @@ function iframe_wheel!(f::IFrame, b::Int)
         # wheel moves that, as it would in tmux.
         (d == 64 || d == 65) || return false
         copy_cmd(f, d == 64 ? "scroll-up" : "scroll-down", WHEEL_ROWS)
-        iframe_sync!(f, f.sized...)
+        iframe_sync!(f, f.sized)
         return true
     end
     f.alt && return false
@@ -532,10 +538,10 @@ function iframe_drag!(f::IFrame, b::Int, x::Int, y::Int, down::Bool,
             copy_cmd(f, y < 0 ? "scroll-up" : "scroll-down")
             # The row the cursor goes to is a new one, and its width is what
             # a column is clamped to.
-            iframe_sync!(f, box...)
+            iframe_sync!(f, box)
         end
         copy_goto(f, clamp(x, 0, cols - 1), clamp(y, 0, rows - 1))
-        iframe_sync!(f, box...)
+        iframe_sync!(f, box)
     end
     nothing
 end
@@ -603,7 +609,7 @@ function copy_finish!(f::IFrame, box::NTuple{2,Int})
     end
     # Where the mode had got to is where the view stays.
     f.scroll = back
-    iframe_sync!(f, box...)
+    iframe_sync!(f, box)
 end
 
 const PASTE_START = b"\e[200~"
@@ -624,7 +630,7 @@ looking."""
 function live!(f::IFrame, box::NTuple{2,Int})
     f.scroll == 0 && return
     f.scroll = 0
-    iframe_sync!(f, box...)
+    iframe_sync!(f, box)
 end
 
 """
@@ -642,7 +648,8 @@ across bursts: it can arrive alone, or ahead of its key in the same read. The
 key after it is the answer, a `UInt8`, for the host to act on: everything typed
 before the prefix has gone to the child, and everything read after the key is
 kept, to go on the next call - which is the host's to make once it has answered
-the key, with no bytes of its own, unless the key took it somewhere else. The
+the key, with no bytes of its own, unless the key took it somewhere else, when
+[`iframe_discard!`](@ref) lets them go. The
 tools for the answers are here - [`iframe_close!`](@ref), [`mux_kill`](@ref),
 [`mux_attach`](@ref), [`iframe_sync!`](@ref), [`iframe_send!`](@ref) for the
 prefix itself - and which key is which is the host's.
@@ -669,7 +676,7 @@ function iframe_input!(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
     # when no wake said so: it is spent on saying the session ended, as a
     # sync would have, and the next one leaves - rather than going to a
     # client that cannot send it, forever.
-    f.client.dead && (iframe_sync!(f, box...); return :ok)
+    f.client.dead && (iframe_sync!(f, box); return :ok)
     if !isempty(f.held)
         bytes = vcat(f.held, bytes)
         empty!(f.held)
@@ -746,7 +753,7 @@ function typed_send!(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
     bytes = retarget_mouse(f, bytes, origin, box)
     # A scroll is only a different window on the same pane, so nothing wakes to
     # say it happened: the re-read has to be asked for here.
-    f.scroll == was || iframe_sync!(f, box...)
+    f.scroll == was || iframe_sync!(f, box)
     iframe_send!(f, bytes, box)
     nothing
 end
@@ -762,6 +769,19 @@ function iframe_send!(f::IFrame, bytes::AbstractVector{UInt8}, box::NTuple{2,Int
     live!(f, box)
     f.client === nothing && return false
     mux_keys(f.client, bytes)
+end
+
+"""
+    iframe_discard!(f)
+
+Drop what was read after the key [`iframe_input!`](@ref) answered, for a host
+whose answer took the keyboard somewhere else: those bytes were typed at
+wherever the keys went, and sent to the child on the next call they would land
+in a program the person had already left.
+"""
+function iframe_discard!(f::IFrame)
+    empty!(f.held)
+    nothing
 end
 
 """

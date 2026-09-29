@@ -24,10 +24,10 @@ look away.
     c = f.client
     @async (while mux_wait(c); redraw(); end; redraw())   # output, and the end
 
-    cols, rows = iframe_box(w, h)          # the child's size inside your box
-    iframe_sync!(f, cols, rows)            # size it, read its screen
+    box = iframe_box(w, h)                 # the child's size inside your box
+    iframe_sync!(f, box)                   # size it, read its screen
     rows_to_print = iframe_rows(f, w, h)   # `h` rows of exactly `w` columns
-    r = iframe_input!(f, bytes, iframe_origin(x, y), (cols, rows))
+    r = iframe_input!(f, bytes, iframe_origin(x, y), box)
     # `r` is `:ok`, `:gone`, or the key typed after `^]` - the host's to act
     # on, before it calls again with no bytes to send on the rest
 
@@ -66,20 +66,32 @@ using TermInput
 # steps over escapes with.
 import TermInput: ESCAPE, boxstyle, CHROME
 
+# Exported: what a host embedding a session writes, with names specific enough
+# that it is unlikely to have them already - the measuring re-exported from
+# `TermInput`, sessions by name, the command pipe and the iframe itself.
 export awidth, astrip, afit, apad, amid, awrap
-export mux_bin, mux_cmd, bundled_tmux, no_mux, mux_name, mux, mux_spawn, mux_line, mux_alive, mux_start, mux_kill, mux_tag!,
-       mux_rename, mux_sessions, mux_list, MuxRow, mux_seen!, mux_ring!, mux_attach, standalone,
-       MUX_ENV, MUX_BG, mux_bg!
-export MuxProto, mux_feed!, mux_unescape, passthrough
-export MuxClient, mux_open, mux_wait, mux_continue!, mux_relay!, mux_sync!, mux_ask, mux_capture, mux_pane_state, CopyMode, copy_selected, mux_paste, mux_brackets,
-       mux_resize, mux_keys, mux_close,
-       MUX_PIPE, MUX_BELLS, MUX_TITLES, mux_pipe, mux_pipe_open, mux_pipe_close, pipe_session,
-       MUX_OLDER, mux_version
-export bordered
+export mux_bin, no_mux, mux_name, mux_alive, mux_start, mux_kill, mux_tag!,
+       mux_rename, mux_sessions, mux_list, MuxRow, mux_seen!, mux_ring!,
+       mux_attach, mux_bg!, MUX_ENV, MUX_OLDER
+export MuxClient, mux_wait, mux_pipe, mux_pipe_open, mux_pipe_close
 export IFrame, iframe, iframe_box, iframe_origin, iframe_sync!, iframe_cursor,
-       iframe_note, iframe_rows, iframe_input!, iframe_send!, iframe_close!,
-       iframe_wheel!, iframe_drag!, retarget_mouse,
-       IFRAME_PREFIX, WHEEL_ROWS
+       iframe_note, iframe_rows, iframe_input!, iframe_discard!, iframe_send!,
+       iframe_close!, IFRAME_PREFIX
+
+# Public and not exported: API, but a name a host is likely to have already -
+# `mux`, `bordered`, `passthrough` - or the layer under the iframe, which a
+# host driving a control client of its own reaches for and one showing an
+# iframe never does. `import TermIFrame: bordered` where they are wanted.
+# `public` is 1.11's, so it is parsed only where it exists.
+@static if VERSION >= v"1.11.0-DEV.469"
+    eval(Meta.parse("""public mux, mux_cmd, mux_spawn, mux_line, bundled_tmux,
+        standalone, MUX_BG, MuxProto, mux_feed!, mux_unescape, passthrough,
+        mux_open, mux_continue!, mux_relay!, mux_sync!, mux_ask, mux_capture,
+        mux_pane_state, CopyMode, copy_selected, mux_paste, mux_brackets,
+        mux_resize, mux_keys, mux_close, MUX_PIPE, MUX_BELLS, MUX_TITLES,
+        pipe_session, mux_version, bordered, iframe_wheel!, iframe_drag!,
+        retarget_mouse, WHEEL_ROWS, PAUSE_AFTER"""))
+end
 
 include("tmux.jl")
 include("control.jl")

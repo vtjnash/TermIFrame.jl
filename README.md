@@ -31,15 +31,15 @@ f = iframe("demo", "htop")
 c = f.client
 @async (while mux_wait(c); redraw(); end; redraw())   # output, and the end
 
-cols, rows = iframe_box(w, h)            # the child's size inside your box
-iframe_sync!(f, cols, rows)              # size it, read its screen back
+box = iframe_box(w, h)                   # the child's (cols, rows) inside your box
+iframe_sync!(f, box)                     # size it, read its screen back
 for line in iframe_rows(f, w, h)         # `h` rows of exactly `w` columns
     println(line)
 end
-r = iframe_input!(f, bytes, iframe_origin(x, y), (cols, rows))
+r = iframe_input!(f, bytes, iframe_origin(x, y), box)
 while r isa UInt8                         # the key typed after ^]
     your_key!(f, r)                      # leave, kill, full screen: yours
-    r = iframe_input!(f, UInt8[], iframe_origin(x, y), (cols, rows))
+    r = iframe_input!(f, UInt8[], iframe_origin(x, y), box)
 end
 ```
 
@@ -48,7 +48,14 @@ changed off the iframe: `client` gone to `nothing` after a sync is the child
 having exited, and `iframe_input!` answering a byte is the key typed after `^]`,
 which is the host's to act on - with `iframe_close!`, `mux_kill`,
 `mux_attach(f.name; suspend)`, `iframe_sync!` or `iframe_send!` - before it
-calls `iframe_input!` again to send on what was read after it.
+calls `iframe_input!` again to send on what was read after it, or
+`iframe_discard!` when the key took the keyboard somewhere else.
+
+What a host writes on every call is exported. The rest - `bordered`, `mux`, the
+control client under the iframe, the protocol under that - is `public` and not
+exported, because those are names a host may have already or a layer it only
+reaches for to build something other than an iframe: `import TermIFrame:
+bordered` where it is wanted.
 
 ## What it does that a bare `tmux attach` does not
 
@@ -110,11 +117,11 @@ Naming, starting, tagging and listing are separate from drawing, which is what
 lets a session outlive every client that has looked at it.
 
 ```julia
-n = mux_name("wl", "julia", "master", "62841"; kind = :agent)   # wl-julia-master-62841-agent
+n = mux_name("app", "julia", "master", "62841"; kind = :agent)  # app-julia-master-62841-agent
 mux_start(n, checkout, "claude")
-mux_tag!(n; worktree = checkout, kind = :agent, item = "julia#62841")
+mux_tag!(n; worktree = checkout, kind = :agent, item = "JuliaLang/julia#62841")
 
-mux_list("wl", ["worktree", "kind", "item"])   # every session under wl-, with those tags
+mux_list("app", ["worktree", "kind", "item"])  # every session under app-, with those tags
 mux_attach(n; suspend = f -> give_the_terminal_away(f))
 ```
 
@@ -131,13 +138,14 @@ sessions, listed apart.
 ## The command pipe
 
 Every session command is a `tmux` process by default, ~3 ms each. A host that
-issues many - a browser listing its sessions, tagging them, marking them read -
+issues many - a dashboard listing its sessions, tagging them, marking them read -
 opens one control-mode client for all of them:
 
 ```julia
-mux_pipe_open("wl") # once a session under wl- exists
-mux(...)            # every command goes down it while it is open, 0.04-0.16 ms
-mux_pipe_close()    # when the last session has ended, and on exit
+import TermIFrame: mux
+mux_pipe_open("app")  # once a session under app- exists
+mux(...)              # every command goes down it while it is open, 0.04-0.16 ms
+mux_pipe_close()      # when the last session has ended, and on exit
 ```
 
 A control client has to be attached to stay open, and attaching to a session

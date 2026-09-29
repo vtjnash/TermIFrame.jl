@@ -9,6 +9,13 @@
 
 using Test
 using TermIFrame
+# Public and not exported, so imported by name, as a host would.
+import TermIFrame: mux, mux_cmd, mux_spawn, mux_line, bundled_tmux, standalone,
+    MUX_BG, MuxProto, mux_feed!, mux_unescape, passthrough, mux_open,
+    mux_continue!, mux_relay!, mux_sync!, mux_ask, mux_capture, mux_pane_state,
+    CopyMode, copy_selected, mux_paste, mux_brackets, mux_resize, mux_keys,
+    mux_close, MUX_PIPE, MUX_BELLS, MUX_TITLES, pipe_session, mux_version,
+    bordered, iframe_wheel!, iframe_drag!, retarget_mouse, WHEEL_ROWS, PAUSE_AFTER
 
 @testset "TermIFrame" begin
 
@@ -200,30 +207,39 @@ end
 @testset "the box round it" begin
     # Every row exactly the width asked for, and exactly as many rows.
     for (w, h) in ((30, 5), (80, 24), (12, 3))
-        rs = bordered(["\e[32mgreen\e[0m plain", "second"], w, h, "demo", true)
+        rs = bordered(["\e[32mgreen\e[0m plain", "second"], w, h, "demo"; focused = true)
         @test length(rs) == h
         @test all(awidth(r) == w for r in rs)
     end
     # The content is in there, colour and all, and the title with it.
-    rs = bordered(["\e[32mgreen\e[0m"], 30, 4, "demo", true)
+    rs = bordered(["\e[32mgreen\e[0m"], 30, 4, "demo"; focused = true)
     @test occursin("green", join(rs)) && occursin("\e[32m", join(rs))
     @test occursin("demo", astrip(rs[1]))
     # A title too long for the box is cut rather than pushing the corner off.
-    rs = bordered(String[], 20, 3, "a title far too long to fit in here", false)
+    rs = bordered(String[], 20, 3, "a title far too long to fit in here";
+                  focused = false)
     @test all(awidth(r) == 20 for r in rs)
     # And the box characters are Term's, which is what makes this a plugin
     # rather than a wrapper: the theme's box is what a `Term.Panel` uses.
-    @test occursin(string(TermIFrame.iframe_box_style().top.left), astrip(rs[1]))
+    @test occursin(string(TermIFrame.boxstyle().top.left), astrip(rs[1]))
     # A gutter mark stands in the left border and its pad, on its row alone;
     # the rows keep their width, and a mark too wide for the two columns is
     # left off rather than cut to an ellipsis.
-    ml = string(TermIFrame.iframe_box_style().mid.left)
-    rs = bordered(["one", "two", "three"], 20, 5, "g", true;
+    ml = string(TermIFrame.boxstyle().mid.left)
+    rs = bordered(["one", "two", "three"], 20, 5, "g"; focused = true,
                   gutter = ["", "\e[36m💬\e[0m", "wide!"])
     @test all(awidth(r) == 20 for r in rs)
     @test startswith(astrip(rs[2]), ml * " one")
     @test startswith(astrip(rs[3]), "💬two")
     @test startswith(astrip(rs[4]), ml * " three")
+    # The weights a host passes paint the whole iframe, border and footer: the
+    # footer painted from the global while the border took the argument would
+    # be one box in two sets of weights.
+    ch = (strong = "\e[31m", quiet = "\e[32m", focus = "\e[7m", reset = "\e[0m")
+    rs = iframe_rows(IFrame("n", "t"), 30, 6; focused = false, chrome = ch)
+    @test length(rs) == 6 && all(awidth(r) == 30 for r in rs)
+    @test startswith(rs[1], ch.quiet) && startswith(rs[end], ch.quiet)
+    @test !any(r -> occursin(TermIFrame.CHROME[].quiet, r), rs)
 end
 
 @testset "the box the child is given" begin
@@ -261,7 +277,7 @@ else
         f = iframe(n, "demo")
         @test f !== nothing
         cols, rows = iframe_box(80, 24)
-        @test iframe_sync!(f, cols, rows) === true
+        @test iframe_sync!(f, (cols, rows)) === true
         @test f.sized == (cols, rows)
         @test length(f.frame) == rows              # the height it was just given
         @test occursin("green", join(f.frame))
@@ -275,7 +291,7 @@ else
 
         # A different size re-sizes the child, not just the box round it.
         cols2, rows2 = iframe_box(120, 40)
-        iframe_sync!(f, cols2, rows2)
+        iframe_sync!(f, (cols2, rows2))
         @test f.sized == (cols2, rows2)
         @test length(f.frame) == rows2
         out = iframe_rows(f, 120, 40)
@@ -303,7 +319,7 @@ else
         r = only(filter(x -> x.name == n, mux_list(P, tags)))
         @test r.title == t
         @test r.tags == [pwd(), "shell", "x;", "https://example.com/1"]
-        iframe_sync!(f, cols2, rows2)
+        iframe_sync!(f, (cols2, rows2))
         @test f.childtitle == t
         @test occursin(string("demo  \u00b7  ", t), first(iframe_rows(f, 120, 40)))
         # The id is the session's, whatever it is called.
@@ -355,7 +371,7 @@ else
         f = iframe(n, "keys")
         box = iframe_box(80, 24)
         sleep(0.5)
-        iframe_sync!(f, box...)
+        iframe_sync!(f, box)
         b(s) = collect(codeunits(s))
         # What was typed before the prefix goes to the child; the key after it
         # is the answer; what was read after the key waits for the host.
@@ -367,6 +383,11 @@ else
         @test iframe_input!(f, vcat(b("e"), [IFRAME_PREFIX]), (3, 2), box) === :ok && f.pending
         @test iframe_input!(f, b("?f"), (3, 2), box) === UInt8('?') && !f.pending
         @test iframe_input!(f, UInt8[], (3, 2), box) === :ok
+        # A key that took the keyboard somewhere else has what followed it
+        # dropped, and it never reaches the child.
+        @test iframe_input!(f, vcat([IFRAME_PREFIX], b("qxy")), (3, 2), box) === UInt8('q')
+        iframe_discard!(f)
+        @test iframe_input!(f, UInt8[], (3, 2), box) === :ok && isempty(f.held)
         # The prefix itself reaches the child only when the host sends it.
         @test iframe_send!(f, [IFRAME_PREFIX], box)
         sleep(0.5)
@@ -397,7 +418,7 @@ else
         # until it was not, and a `seq` that had not finished left every
         # assertion below measuring an empty history.
         for _ in 1:40
-            iframe_sync!(f, box...)
+            iframe_sync!(f, box)
             f.history > 100 && break
             sleep(0.25)
         end
@@ -492,7 +513,7 @@ else
         f = iframe(n, "sh")
         box = (40, 10)
         for _ in 1:40
-            iframe_sync!(f, box...)
+            iframe_sync!(f, box)
             f.history > 100 && any(startswith("tail"), astrip.(f.frame)) && break
             sleep(0.25)
         end
@@ -599,7 +620,7 @@ else
         f = iframe(n, "sh")
         box, origin = (40, 10), iframe_origin(1, 1)
         for _ in 1:40
-            iframe_sync!(f, box...)
+            iframe_sync!(f, box)
             f.history > 100 && any(startswith("tail"), astrip.(f.frame)) && break
             sleep(0.25)
         end
@@ -712,7 +733,7 @@ else
             f = iframe(n, "paste")
             box = iframe_box(80, 24)
             sleep(0.5)
-            iframe_sync!(f, box...)
+            iframe_sync!(f, box)
             # A paste cut three ways by the reads it arrived in, one of them
             # through the end marker, with typing either side. The prefix
             # inside it is text like the rest.
@@ -751,7 +772,7 @@ else
         t = @async (while mux_wait(c); woke[] += 1; end; woke[] += 1)
         box = iframe_box(40, 10)
         for _ in 1:40
-            iframe_sync!(f, box...)
+            iframe_sync!(f, box)
             f.client === nothing && break
             sleep(0.25)
         end
@@ -761,7 +782,7 @@ else
         @test mux_wait(c) === false
         # A later sync has nothing to find: what the host does about the end is
         # done once, by the host, from the first one.
-        @test iframe_sync!(f, box...) === false
+        @test iframe_sync!(f, box) === false
         # What to do about it is the host's to say, and so are its keys.
         f.status = ""
         @test iframe_note(f) === nothing
@@ -782,13 +803,13 @@ else
         f = iframe(n, "flood"; pause = 1)
         c = f.client
         box = iframe_box(40, 10)
-        @test iframe_sync!(f, box...)
+        @test iframe_sync!(f, box)
         # The thread stops, as it does behind a blocked write, not the task.
         Libc.systemsleep(4)
         @test timedwait(() -> !isempty(c.paused), 5.0) === :ok
         @test !c.dead
         # The next sync takes it up again and reads the screen.
-        @test iframe_sync!(f, box...) && f.client === c && isempty(c.paused)
+        @test iframe_sync!(f, box) && f.client === c && isempty(c.paused)
         @test !isempty(f.frame)
         before = c.outputs
         @test timedwait(() -> c.outputs > before, 5.0) === :ok
@@ -810,7 +831,7 @@ else
             @test mux_alive(n)                     # kept, though nothing runs
             f = iframe(n, "failed")
             @test f !== nothing
-            @test iframe_sync!(f, box...) === true
+            @test iframe_sync!(f, box) === true
             @test f.client === nothing && f.exited == status
             @test occursin(string("status ", status), f.status)
             text = join(astrip.(f.frame), "\n")
@@ -955,6 +976,24 @@ else
         mux_kill(n)
     end
 
+end
+
+@testset "every exported or public name says what it is" begin
+    # A name a host is told to import and cannot ask about is half an API.
+    # `names` lists the public names on 1.11 and the exported ones before it.
+    api = setdiff(names(TermIFrame), [:TermIFrame])
+    @test isempty(filter(n -> !Docs.hasdoc(TermIFrame, n), api))
+    if VERSION >= v"1.11.0-DEV.469"
+        # What this file imports by name is public, so a host can too.
+        for n in (:mux, :bordered, :passthrough, :mux_open, :mux_keys,
+                  :retarget_mouse, :iframe_wheel!, :WHEEL_ROWS, :PAUSE_AFTER)
+            @test Base.ispublic(TermIFrame, n)
+        end
+        # A name a host is likely to have is not pushed into its namespace.
+        for n in (:mux, :bordered, :passthrough, :standalone, :ESCAPE)
+            @test !Base.isexported(TermIFrame, n)
+        end
+    end
 end
 
 end # testset TermIFrame
