@@ -61,8 +61,12 @@ using Base64: base64encode
 # The escape-aware measuring, which is `TermInput`'s and re-exported below: a
 # host laying an iframe out beside something else needs it as much as this does.
 using TermInput
+# Public in `TermInput` and not exported there, so imported by name: the box a
+# border follows and the weights it is painted in, and the pattern `iframe.jl`
+# steps over escapes with.
+import TermInput: ESCAPE, boxstyle, CHROME
 
-export ESCAPE, awidth, astrip, afit, apad, amid, awrap
+export awidth, astrip, afit, apad, amid, awrap
 export mux_bin, mux_cmd, bundled_tmux, no_mux, mux_name, mux, mux_spawn, mux_line, mux_alive, mux_start, mux_kill, mux_tag!,
        mux_rename, mux_sessions, mux_list, MuxRow, mux_seen!, mux_ring!, mux_attach, standalone,
        MUX_ENV, MUX_BG, mux_bg!
