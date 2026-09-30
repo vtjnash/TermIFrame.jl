@@ -64,7 +64,8 @@ bordered` where it is wanted.
 * **Scrollback the child does not have.** `capture-pane` reads the grid, so a
   box showing a shell that has just printed a build log had no way to look back
   at it. A wheel report the child did not ask for scrolls the host's window over
-  the pane's own history instead.
+  the pane's own history instead, and so do shift- and ctrl-PgUp/PgDn, a page
+  at a time, off the alternate screen.
 * **A drag that selects, as tmux's own does.** Over a child that did not ask for
   the mouse, a drag is tmux's copy mode - tmux is what knows a wrapped line from
   two, and joins the one when it copies. A control client cannot hand tmux the

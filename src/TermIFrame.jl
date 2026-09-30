@@ -87,7 +87,7 @@ export IFrame, iframe, iframe_box, iframe_origin, iframe_sync!, iframe_cursor,
         mux_open, mux_continue!, mux_relay!, mux_sync!, mux_ask, mux_capture,
         mux_pane_state, CopyMode, copy_selected, mux_paste, mux_brackets,
         mux_resize, mux_keys, mux_close, MUX_PIPE, MUX_BELLS, MUX_TITLES,
-        pipe_session, mux_version, bordered, iframe_wheel!, iframe_drag!,
+        pipe_session, mux_version, bordered, iframe_wheel!, page_keys!, iframe_drag!,
         retarget_mouse, WHEEL_ROWS, PAUSE_AFTER, ESCAPE, unescaped"""))
 end
 

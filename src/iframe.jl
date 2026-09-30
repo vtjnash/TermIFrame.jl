@@ -461,6 +461,44 @@ function iframe_wheel!(f::IFrame, b::Int)
 end
 
 """
+    page_keys!(f, bytes) -> (bytes, Bool)
+
+Take the shifted and controlled page keys (`\\e[5;2~`, `\\e[6;5~` and the like)
+out of `bytes` and answer them here, a page of the pane's history at a time,
+as the wheel is answered - and say whether the view moved.
+
+A terminal keeps these for its own scrollback, and a shell has nothing bound
+to them: sent on, readline prints the tail of the sequence, `5~`, at the
+prompt. On the alternate screen they are left for the child, which may bind
+them - a pager, an editor's tabs - and has no history behind it to show.
+"""
+function page_keys!(f::IFrame, bytes::Vector{UInt8})
+    (f.copy === nothing && f.alt) && return (bytes, false)
+    moved = false
+    out = UInt8[]
+    i = 1
+    while i <= length(bytes)
+        if i + 5 <= length(bytes) && bytes[i] == 0x1b && bytes[i+1] == UInt8('[') &&
+           bytes[i+2] in (UInt8('5'), UInt8('6')) && bytes[i+3] == UInt8(';') &&
+           bytes[i+4] in (UInt8('2'), UInt8('5'), UInt8('6')) && bytes[i+5] == UInt8('~')
+            up = bytes[i+2] == UInt8('5')
+            page = max(1, last(f.sized) - 1)
+            if f.copy !== nothing
+                copy_cmd(f, up ? "scroll-up" : "scroll-down", page)
+            else
+                f.scroll = clamp(f.scroll + (up ? page : -page), 0, f.history)
+            end
+            moved = true
+            i += 6
+        else
+            push!(out, bytes[i])
+            i += 1
+        end
+    end
+    (out, moved)
+end
+
+"""
     retarget_mouse(f, bytes, origin, box) -> Vector{UInt8}
 
 Rewrite the mouse reports in `bytes` for the child, or answer them here.
@@ -795,9 +833,10 @@ function typed_send!(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
     isempty(bytes) && return
     was = f.scroll
     bytes = retarget_mouse(f, bytes, origin, box)
+    (bytes, paged) = page_keys!(f, bytes)
     # A scroll is only a different window on the same pane, so nothing wakes to
     # say it happened: the re-read has to be asked for here.
-    f.scroll == was || iframe_sync!(f, box)
+    (paged || f.scroll != was) && iframe_sync!(f, box)
     iframe_send!(f, bytes, box)
     nothing
 end

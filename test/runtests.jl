@@ -15,7 +15,7 @@ import TermIFrame: mux, mux_cmd, mux_spawn, mux_line, bundled_tmux, standalone,
     mux_continue!, mux_relay!, mux_sync!, mux_ask, mux_capture, mux_pane_state,
     CopyMode, copy_selected, mux_paste, mux_brackets, mux_resize, mux_keys,
     mux_close, MUX_PIPE, MUX_BELLS, MUX_TITLES, pipe_session, mux_version,
-    bordered, iframe_wheel!, iframe_drag!, retarget_mouse, WHEEL_ROWS, PAUSE_AFTER,
+    bordered, iframe_wheel!, page_keys!, iframe_drag!, retarget_mouse, WHEEL_ROWS, PAUSE_AFTER,
     ESCAPE, unescaped
 
 import TermInput
@@ -466,6 +466,21 @@ else
             @test iframe_wheel!(f, b) === true && f.scroll == WHEEL_ROWS
         end
         f.scroll = 0
+
+        # The shifted and controlled page keys are a page of it, and are not
+        # typed at the shell, which has nothing bound to them and would print
+        # the tail of the sequence.
+        page = last(box) - 1
+        iframe_input!(f, collect(codeunits("\e[5;5~")), origin, box)
+        @test f.scroll == page
+        @test parse(Int, unescaped(first(f.frame))) == parse(Int, live) - page
+        iframe_input!(f, collect(codeunits("\e[5;2~\e[6;2~\e[6;5~")), origin, box)
+        @test f.scroll == 0 && unescaped(first(f.frame)) == live
+        # A child on the alternate screen may bind them, and has them.
+        f.alt = true
+        @test page_keys!(f, collect(codeunits("\e[5;5~"))) ==
+              (collect(codeunits("\e[5;5~")), false)
+        f.alt = false
 
         # It stops at the top of the history rather than running past it.
         for _ in 1:(f.history ÷ WHEEL_ROWS + 20)
