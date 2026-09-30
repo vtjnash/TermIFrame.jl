@@ -71,24 +71,27 @@ mutable struct IFrame
                                    # the server kept its pane to show why
     childtitle::String             # the title the child set, drawn on the
                                    # border after `title`; "" where it never did
+    out::IO                        # the terminal it is drawn on, which what the
+                                   # child writes past the frame is relayed to
 end
 
 """
-    IFrame(name, title = "") -> IFrame
+    IFrame(name, title = ""; out = stdout) -> IFrame
 
-An iframe with no child behind it.
+An iframe with no child behind it. `out` is the terminal it is drawn on, as
+for [`iframe`](@ref).
 
 What one becomes when its child exits, and what a host's own key routing can be
 built against without a server: everything that does not need the child - the
 box, the footer, which keys are whose - answers the same way either way.
 """
-IFrame(name::AbstractString, title::AbstractString = "") =
+IFrame(name::AbstractString, title::AbstractString = ""; out::IO = stdout) =
     IFrame(String(name), String(title), nothing, String[], (0, 0), "", false,
            (0, 0, false), false, 0, 0, false, false, nothing, UInt8[], UInt8[],
-           nothing, nothing, false, nothing, "")
+           nothing, nothing, false, nothing, "", out)
 
 """
-    iframe(name, title; pause = PAUSE_AFTER) -> IFrame | Nothing
+    iframe(name, title; pause = PAUSE_AFTER, out = stdout) -> IFrame | Nothing
 
 Open an iframe onto `name`, which must already be a running session - starting
 one is [`mux_start`](@ref)'s job.
@@ -103,13 +106,18 @@ process - has the pane paused and taken up again on its next sync
 ([`mux_continue!`](@ref)), where without it tmux drops the client once it is
 five minutes behind and the pane says `session ended: the server said exit: too
 far behind` over a session that is still running.
+
+`out` is the terminal the iframe is drawn on - the host's, whatever stream it
+writes its frames to. What the child writes that a frame cannot carry, the
+clipboard, is relayed there ([`iframe_sync!`](@ref)).
 """
-function iframe(name::AbstractString, title::AbstractString; pause::Integer = PAUSE_AFTER)
+function iframe(name::AbstractString, title::AbstractString; pause::Integer = PAUSE_AFTER,
+                out::IO = stdout)
     c = mux_open(name; flags = string("pause-after=", pause))
     c === nothing && return nothing
     IFrame(String(name), String(title), c, String[], (0, 0), "", false,
            (0, 0, false), false, 0, 0, false, false, nothing, UInt8[], UInt8[],
-           nothing, nothing, false, nothing, "")
+           nothing, nothing, false, nothing, "", out)
 end
 
 """How long, in seconds, a pane's output can go unread before the server pauses
@@ -151,8 +159,8 @@ behind: a host redraws far more often than the child changes.
 Returns whether anything is worth redrawing, which for a live child is always.
 
 What the child wrote that a redraw cannot carry - the clipboard, see
-[`passthrough`](@ref) - is printed here, to this process's own stdout, where the
-terminal a person is looking at is the next thing up. Here and not on the
+[`passthrough`](@ref) - is written here, to the iframe's `out`, the terminal
+it is drawn on, where a person is looking. Here and not on the
 reader: the host's own task, between its frames, is the one place nothing else
 is writing.
 """
@@ -160,9 +168,9 @@ function iframe_sync!(f::IFrame, box::NTuple{2,Int})
     f.client === nothing && return false
     relay = mux_relay!(f.client)
     isempty(relay) || try
-        foreach(seq -> print(stdout, seq), relay)
+        foreach(seq -> print(f.out, seq), relay)
     catch
-        # A closed stdout is the terminal going away, which the host will find
+        # A closed `out` is the terminal going away, which the host will find
         # out about on its own.
     end
     # A pane the server paused while this was not reading is continued before

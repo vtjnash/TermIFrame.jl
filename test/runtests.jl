@@ -617,7 +617,10 @@ else
         n = mux_name(P, "test", "drag")
         mux_kill(n)
         mux_start(n, pwd(), "sh -c 'seq 1 500; seq -s x 1 30; echo tail; sleep 120'")
-        f = iframe(n, "sh")
+        # The terminal it is drawn on, where the clipboard is relayed - a
+        # buffer, rather than the terminal running the tests.
+        term = IOBuffer()
+        f = iframe(n, "sh"; out = term)
         box, origin = (40, 10), iframe_origin(1, 1)
         for _ in 1:40
             iframe_sync!(f, box)
@@ -631,16 +634,8 @@ else
         # A report at the child's cell `(x, y)`, 0-based.
         sgr(b, x, y, fin = 'M') = collect(codeunits(string("\e[<", b, ";",
             origin[1] + x, ";", origin[2] + y, fin)))
-        # What the sync prints - the clipboard - caught rather than sent to
-        # the terminal running the tests.
-        function caught(g)
-            path, io = mktemp()
-            redirect_stdout(g, io)
-            close(io)
-            s = read(path, String)
-            rm(path)
-            s
-        end
+        # What the sync writes - the clipboard - while `g` runs.
+        caught(g) = (take!(term); g(); String(take!(term)))
 
         # A press alone is nothing, as in tmux, and a release after it copies
         # nothing either.
