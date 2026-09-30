@@ -112,8 +112,9 @@ Both halves come through [`TermInput.jl`](https://github.com/vtjnash/TermInput.j
 which is this package's only dependency besides `tmux_jll`: a text field needs
 exactly the same measuring for exactly the same reason, and the dependency goes
 that way round because a text field must not pull a tmux binary in to measure a
-string. `awidth`, `astrip`, `afit`, `apad`, `amid` and `awrap` are re-exported
-here, so a host laying an iframe out beside something else has them.
+string. What reads a child's escapes is here and not there, and only reads
+them: `ESCAPE` steps over one, and `unescaped(row)` is a captured row's text,
+for counting characters in it.
 
 ## Sessions
 

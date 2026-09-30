@@ -15,7 +15,8 @@ import TermIFrame: mux, mux_cmd, mux_spawn, mux_line, bundled_tmux, standalone,
     mux_continue!, mux_relay!, mux_sync!, mux_ask, mux_capture, mux_pane_state,
     CopyMode, copy_selected, mux_paste, mux_brackets, mux_resize, mux_keys,
     mux_close, MUX_PIPE, MUX_BELLS, MUX_TITLES, pipe_session, mux_version,
-    bordered, iframe_wheel!, iframe_drag!, retarget_mouse, WHEEL_ROWS, PAUSE_AFTER
+    bordered, iframe_wheel!, iframe_drag!, retarget_mouse, WHEEL_ROWS, PAUSE_AFTER,
+    ESCAPE, unescaped
 
 import TermInput
 import TermInput: Row, faced, verbatim, rowwidth, frame_bytes
@@ -217,7 +218,7 @@ end
         rs = bordered([TermInput.rowcat(green, " plain"), "second"], w, h, "demo"; focused = true)
         @test length(rs) == h
         @test all(rowwidth(r) == w for r in rs)
-        @test all(r -> textwidth(TermInput.astrip(ansi(r))) == w, rs)
+        @test all(r -> textwidth(TermIFrame.unescaped(ansi(r))) == w, rs)
     end
     # The content is in there, colour and all, and the title with it.
     rs = bordered([green], 30, 4, "demo"; focused = true)
@@ -440,14 +441,14 @@ else
         end
         @test f.wantsmouse === false          # a shell asked for nothing
         @test f.alt === false && f.history > 100
-        live = astrip(first(f.frame))
+        live = unescaped(first(f.frame))
         wheel(b) = collect(codeunits(string("\e[<", b, ";", origin[1] + 5, ";",
                                             origin[2] + 5, "M")))
 
         iframe_input!(f, wheel(64), origin, box)
         @test f.scroll == WHEEL_ROWS
         # The window moved by exactly what the wheel says it moved by.
-        @test parse(Int, astrip(first(f.frame))) == parse(Int, live) - WHEEL_ROWS
+        @test parse(Int, unescaped(first(f.frame))) == parse(Int, live) - WHEEL_ROWS
         # No cursor while looking at the past: it is not on these rows.
         @test iframe_cursor(f, origin, box) === nothing
         # And the note says where you are, over anything else it might say.
@@ -456,7 +457,7 @@ else
         f.status = ""
 
         iframe_input!(f, wheel(65), origin, box)
-        @test f.scroll == 0 && astrip(first(f.frame)) == live
+        @test f.scroll == 0 && unescaped(first(f.frame)) == live
 
         # Shift- and ctrl-wheel are the same request refined, not a different
         # one, so they scroll rather than falling through.
@@ -530,12 +531,12 @@ else
         box = (40, 10)
         for _ in 1:40
             iframe_sync!(f, box)
-            f.history > 100 && any(startswith("tail"), astrip.(f.frame)) && break
+            f.history > 100 && any(startswith("tail"), unescaped.(f.frame)) && break
             sleep(0.25)
         end
         c, t = f.client, string(" -t =", n, ":")
         # The view: rows 0-5 are 495-500, 6 and 7 the wrapped line, 8 `tail`.
-        rows = astrip.(f.frame)
+        rows = unescaped.(f.frame)
         @test rows[1] == "495" && rows[9] == "tail"
         @test length(rows[7]) == 40 && startswith(rows[8], "7x18x")
         hist = f.history
@@ -640,13 +641,13 @@ else
         box, origin = (40, 10), iframe_origin(1, 1)
         for _ in 1:40
             iframe_sync!(f, box)
-            f.history > 100 && any(startswith("tail"), astrip.(f.frame)) && break
+            f.history > 100 && any(startswith("tail"), unescaped.(f.frame)) && break
             sleep(0.25)
         end
         c = f.client
         @test first(mux_ask(c, string("set -w -t =", n, ": mode-keys emacs")))
         @test f.wantsmouse === false
-        rows, hist = astrip.(f.frame), f.history
+        rows, hist = unescaped.(f.frame), f.history
         # A report at the child's cell `(x, y)`, 0-based.
         sgr(b, x, y, fin = 'M') = collect(codeunits(string("\e[<", b, ";",
             origin[1] + x, ";", origin[2] + y, fin)))
@@ -675,7 +676,7 @@ else
         @test occursin("50\e[7m0", f.frame[6])
         @test startswith(f.frame[7], "\e[7m")
         @test occursin("\e[7m7x18\e[27mx", f.frame[8])
-        @test astrip(f.frame[8]) == rows[8]           # painted, not changed
+        @test unescaped(f.frame[8]) == rows[8]           # painted, not changed
         # The real cursor is copy mode's, and the note says where you are.
         @test iframe_cursor(f, origin, box) == (origin[2] + 7, origin[1] + 4)
         @test occursin("copy mode", iframe_note(f))
@@ -845,7 +846,7 @@ else
             @test iframe_sync!(f, box) === true
             @test f.client === nothing && f.exited == status
             @test occursin(string("status ", status), f.status)
-            text = join(astrip.(f.frame), "\n")
+            text = join(unescaped.(f.frame), "\n")
             @test occursin(said, text) && occursin("Pane is dead", text)
             # Nothing can be typed at it; letting go of it is ending it.
             @test iframe_send!(f, UInt8['x'], box) === false

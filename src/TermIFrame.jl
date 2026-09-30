@@ -49,27 +49,25 @@ The border is `TermInput.CHROME[]`'s box and faces, so an iframe beside a
 composer or a dialog is bordered the way they are, and its rows are
 `TermInput`'s rows of faces, with a captured screen's row carried inside as a
 verbatim piece - the child's raw SGR and OSC 8, as tmux gave them, never
-measured. The measuring comes from there too - `awidth`, `astrip`, `afit`,
-`apad`, `amid` and `awrap`, re-exported here. It lives in `TermInput` because
+measured. The measuring comes from there too. It lives in `TermInput` because
 a text field needs exactly the same thing and must not pull a tmux binary in
-to get it.
+to get it. What reads a screen's escapes at all is here, and only reads them:
+`ESCAPE`, and `unescaped` for the text of a row.
 """
 module TermIFrame
 
 import tmux_jll
 using Base64: base64encode
-# The escape-aware measuring, which is `TermInput`'s and re-exported below: a
-# host laying an iframe out beside something else needs it as much as this does.
+# Rows of faces, which is what the box is drawn as and what `TermInput`'s frame
+# writes.
 using TermInput
 # Public in `TermInput` and not exported there, so imported by name: the box a
-# border follows and the faces it is painted in, the row it is drawn as, and the pattern `iframe.jl`
-# steps over escapes with.
-import TermInput: ESCAPE, boxstyle, CHROME, Row, row, verbatim
+# border follows and the faces it is painted in, and the row it is drawn as.
+import TermInput: boxstyle, CHROME, Row, row, verbatim
 
 # Exported: what a host embedding a session writes, with names specific enough
-# that it is unlikely to have them already - the measuring re-exported from
-# `TermInput`, sessions by name, the command pipe and the iframe itself.
-export awidth, astrip, afit, apad, amid, awrap
+# that it is unlikely to have them already - sessions by name, the command pipe
+# and the iframe itself.
 export mux_bin, no_mux, mux_name, mux_alive, mux_start, mux_kill, mux_tag!,
        mux_rename, mux_sessions, mux_list, MuxRow, mux_seen!, mux_ring!,
        mux_attach, mux_bg!, MUX_ENV, MUX_OLDER
@@ -90,7 +88,7 @@ export IFrame, iframe, iframe_box, iframe_origin, iframe_sync!, iframe_cursor,
         mux_pane_state, CopyMode, copy_selected, mux_paste, mux_brackets,
         mux_resize, mux_keys, mux_close, MUX_PIPE, MUX_BELLS, MUX_TITLES,
         pipe_session, mux_version, bordered, iframe_wheel!, iframe_drag!,
-        retarget_mouse, WHEEL_ROWS, PAUSE_AFTER"""))
+        retarget_mouse, WHEEL_ROWS, PAUSE_AFTER, ESCAPE, unescaped"""))
 end
 
 include("tmux.jl")

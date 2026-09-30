@@ -218,6 +218,36 @@ function iframe_sync!(f::IFrame, box::NTuple{2,Int})
     true
 end
 
+"""
+    ESCAPE
+
+Matches a CSI sequence or an OSC 8 hyperlink at the start of a string - what
+is in a captured row and takes no columns. `match(ESCAPE, SubString(s, i))` is
+how a walk over a row steps over one. The one reader of a child's escapes:
+nothing here turns them into anything else.
+"""
+const ESCAPE = r"^(?:\e\[[0-9;:]*[A-Za-z]|\e\][^\e]*\e\\)"
+
+"""
+    unescaped(row) -> String
+
+A captured row with its escapes taken out: what the child's screen says there,
+as against how it looks - what a copy counts characters in and what a blank
+row is blank of.
+"""
+function unescaped(s::AbstractString)
+    io, i = IOBuffer(), firstindex(s)
+    while i <= lastindex(s)
+        m = match(ESCAPE, SubString(s, i))
+        if m === nothing
+            write(io, s[i]); i = nextind(s, i)
+        else
+            i += ncodeunits(m.match)
+        end
+    end
+    String(take!(io))
+end
+
 """What a dead pane said, in `rows` rows: its history as well as its screen,
 since the pane was resized to the box after it died and a box shorter than it
 pushed its top lines - often the only ones with anything in them - into the
@@ -227,7 +257,7 @@ they go, and the last `rows` lines are what is left.
 """
 function dead_screen(c::MuxClient, hist::Int, rows::Int)
     lines = mux_capture(c; scroll = hist, rows = hist + rows)
-    blank(l) = isempty(strip(astrip(l)))
+    blank(l) = isempty(strip(unescaped(l)))
     while !isempty(lines) && blank(lines[end])
         pop!(lines)
     end
@@ -587,7 +617,7 @@ function copy_goto(f::IFrame, x::Int, y::Int)
     copy_cmd(f, "cursor-down", y)
     ok, st = mux_ask(f.client, string("display-message -p -t =", f.name, ": '#{copy_cursor_x}'"))
     at = ok && !isempty(st) ? something(tryparse(Int, strip(st[1])), 0) : 0
-    line = y + 1 <= length(f.frame) ? rstrip(astrip(f.frame[y + 1])) : ""
+    line = y + 1 <= length(f.frame) ? rstrip(unescaped(f.frame[y + 1])) : ""
     d = chars_before(line, x) - chars_before(line, at)
     d > 0 ? copy_cmd(f, "cursor-right", d) : copy_cmd(f, "cursor-left", -d)
 end
