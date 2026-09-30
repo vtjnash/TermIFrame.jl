@@ -219,8 +219,8 @@ end
     rs = bordered(String[], 20, 3, "a title far too long to fit in here";
                   focused = false)
     @test all(awidth(r) == 20 for r in rs)
-    # And the box characters are Term's, which is what makes this a plugin
-    # rather than a wrapper: the theme's box is what a `Term.Panel` uses.
+    # And the box characters are `CHROME[].box`, which is what the host's
+    # composers and dialogs are drawn with too.
     @test occursin(string(TermIFrame.boxstyle().top.left), astrip(rs[1]))
     # A gutter mark stands in the left border and its pad, on its row alone;
     # the rows keep their width, and a mark too wide for the two columns is

@@ -92,17 +92,17 @@ bordered` where it is wanted.
   time (~5ms against ~1ms) and has no way to be *told* something changed — it can
   only ask.
 
-## What Term gives it
+## What TermInput gives it
 
-The border is drawn with Term's box characters, following
-`Term.TERM_THEME[].box` — so an iframe beside a `Term.Panel` is bordered the way
-that panel is, and changing the theme moves both.
+The border is drawn with `TermInput`'s box characters and weights,
+`CHROME[]` - so an iframe beside a composer or a dialog is bordered the way it
+is, and a host that sets them moves both.
 
-The measuring is not Term's, and deliberately so. `Panel` measures markup, and a
-captured screen is not markup: it is a child program's raw SGR and OSC 8
-hyperlinks, which markup measurement counts as characters. Content that fits
-gets wrapped, and the panel then elides its own tail. So `awidth`, `afit` and
-`apad` work against real display widths, and Term supplies the glyphs.
+The measuring is display widths, and deliberately so. A captured screen is a
+child program's raw SGR and OSC 8 hyperlinks, and a measure of markup - Term's
+`Panel` - counts them as characters: content that fits gets wrapped, and the
+panel then elides its own tail. So `awidth`, `afit` and `apad` work against
+real display widths.
 
 Both halves come through [`TermInput.jl`](https://github.com/vtjnash/TermInput.jl),
 which is this package's only dependency besides `tmux_jll`: a text field needs

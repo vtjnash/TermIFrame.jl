@@ -1,16 +1,14 @@
 # The box drawn round an embedded screen.
 #
-# This is where the package is a Term plugin rather than a tmux wrapper: the
-# characters come from Term's own box vocabulary and default to the box the
-# current theme uses, so an iframe sitting beside a `Term.Panel` is bordered
-# the same way it is - change `TERM_THEME[].box` and both follow.
+# The characters are `TermInput`'s box, `CHROME[].box` unless a box is passed,
+# so an iframe beside a composer, a dialog or a table a host drew is bordered
+# the same way - a host sets the box where it sets the weights, and both follow.
 #
-# What does not come from Term is the *measuring*. `Panel` measures markup, and
-# a captured screen is not markup: it is a child program's raw SGR and OSC 8,
-# which `Panel` counts as characters. Content that fits is wrapped and the panel
-# then elides its own tail. So the rows are laid out against real display widths
-# - `TermInput`'s `awidth`, `afit` and `apad`, which a text field needs for the
-# same reason - and Term supplies the glyphs.
+# The rows are laid out against real display widths, since a captured screen
+# is a child program's raw SGR and OSC 8, and a measure that counted those as
+# characters - Term's `Panel`, which measures markup - wraps content that fits
+# and then elides its own tail. `TermInput`'s `awidth`, `afit` and `apad` are
+# that measure, and a text field needs it for the same reason.
 
 """
     bordered(lines, w, h, title; focused = true, box = boxstyle(),

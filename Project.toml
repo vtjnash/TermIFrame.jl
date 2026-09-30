@@ -3,9 +3,8 @@ uuid = "eb3a209b-12c7-484c-af99-a1186270a51f"
 authors = ["Jameson Nash <vtjnash@gmail.com>"]
 version = "0.1.0"
 
-# No `Term` here any more: nothing in this package names it. The box glyphs and
-# the theme arrive through `TermInput`, which is also where the measuring under
-# them went.
+# The box glyphs and the weights arrive through `TermInput`, which is also where
+# the measuring under them is.
 [deps]
 Base64 = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
 TermInput = "e53b28ee-00f8-475a-85b8-1918fdda0ee8"

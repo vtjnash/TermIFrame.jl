@@ -40,19 +40,18 @@ one prefix key - `^]` - which is the only key the child never gets.
 
   * `tmux.jl`    sessions: name one, start it, tag it, list them, attach
   * `control.jl` `tmux -C`, as a protocol, as a client, and as the command pipe
-  * `border.jl`  the box, in Term's box characters and the theme's style
+  * `border.jl`  the box, in `TermInput`'s box characters and weights
   * `iframe.jl`  the widget: size, screen, cursor, mouse, scrollback, prefix
 
-## What Term gives it
+## What TermInput gives it
 
-The border follows `Term.TERM_THEME[].box`, so an iframe beside a `Term.Panel`
-is bordered the way that panel is. The measuring is not Term's: `Panel` measures
-markup, and a captured screen is a child program's raw SGR and OSC 8, which
-markup measurement counts as characters - content that fits is wrapped, and the
-panel then elides its own tail. It comes from `TermInput` instead - `awidth`,
-`astrip`, `afit`, `apad`, `amid` and `awrap`, re-exported here - which is where
-it lives because a text field needs exactly the same thing and must not pull a
-tmux binary in to get it.
+The border is `TermInput.CHROME[]`'s box and weights, so an iframe beside a
+composer or a dialog is bordered the way they are. The measuring comes from
+there too - `awidth`, `astrip`, `afit`, `apad`, `amid` and `awrap`,
+re-exported here - since a captured screen is a child program's raw SGR and
+OSC 8, and a measure of markup counts those as characters. It lives in
+`TermInput` because a text field needs exactly the same thing and must not
+pull a tmux binary in to get it.
 """
 module TermIFrame
 
