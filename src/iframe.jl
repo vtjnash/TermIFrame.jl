@@ -189,7 +189,7 @@ function iframe_sync!(f::IFrame, box::NTuple{2,Int})
         # died, tmux's `Pane is dead` line at its foot, is what is kept here,
         # and then the child is gone as any other is - nothing can be typed at
         # a dead pane. The session stays until the iframe lets go of it.
-        f.frame = [string(l, "\e[0m") for l in dead_screen(f.client, hist, last(f.sized))]
+        f.frame = dead_screen(f.client, hist, last(f.sized))
         f.cursor, f.copy, f.scroll = (0, 0, false), nothing, 0
         f.exited = dead
         f.status = string("exited with status ", dead)
@@ -205,9 +205,9 @@ function iframe_sync!(f::IFrame, box::NTuple{2,Int})
         f.client = nothing
         return true
     end
-    # Every row is closed off, or an unterminated colour would run out of the
-    # content and into the border and padding.
-    f.frame = [string(l, "\e[0m") for l in lines]
+    # As tmux gave them: a row leaves a colour open into the next, which is
+    # why the frame writer closes each one after it is written.
+    f.frame = lines
     f.cursor, f.wantsmouse = (cx, cy, showing), mouse
     f.history, f.alt, f.copy = hist, alt, copy
     copy === nothing || paint_selection!(f.frame, copy, hist, first(f.sized))
@@ -345,12 +345,16 @@ end
 
 """
     iframe_rows(f, w, h; focused = true, note = nothing, box = boxstyle(),
-                chrome = CHROME[]) -> Vector{String}
+                chrome = CHROME[]) -> Vector{Row}
 
 The whole iframe: `h` rows of exactly `w` display columns, border and footer
-included. `note` overrides [`iframe_note`](@ref), which is how a host puts its
-own keys on the last row. `focused`, `box` and `chrome` are
-[`bordered`](@ref)'s, and the footer is painted in the same `chrome`.
+included, each a `TermInput.Row` for its `frame_bytes`. A row of the child's
+screen is in it as a verbatim piece, the child's escapes as the multiplexer
+gave them, as wide as the inside of the box - which is what the pane was sized
+to, so it is taken at that width and never measured. `note` overrides
+[`iframe_note`](@ref), which is how a host puts its own keys on the last row.
+`focused`, `box` and `chrome` are [`bordered`](@ref)'s, and the footer is
+painted in the same `chrome`.
 """
 function iframe_rows(f::IFrame, w::Int, h::Int; focused::Bool = true,
                      note = nothing, box = boxstyle(), chrome = CHROME[])
@@ -358,14 +362,16 @@ function iframe_rows(f::IFrame, w::Int, h::Int; focused::Bool = true,
     # is, the child's what is going on in it - an agent names its conversation
     # there. Cut from the right by `bordered`, so the host's is what stays.
     title = isempty(f.childtitle) ? f.title : string(f.title, "  \u00b7  ", f.childtitle)
-    body = bordered(f.frame, w, h - 1, title; focused, box, chrome)
+    inner = max(0, w - 4)
+    body = bordered(Row[verbatim(l, inner) for l in f.frame], w, h - 1, title;
+                    focused, box, chrome)
     n = note === nothing ? iframe_note(f) : note
     n === nothing && (n = f.name)
-    rows = vcat(body, [string(chrome.quiet, afit(String(n), w), chrome.reset)])
+    rows = vcat(body, Row[faced(rowfit(n, w), chrome.quiet)])
     while length(rows) < h
-        push!(rows, "")
+        push!(rows, row(""))
     end
-    [apad(r, w) for r in rows[1:h]]
+    Row[rowpad(r, w) for r in rows[1:h]]
 end
 
 """Ctrl-] is the prefix, and the only key the child never gets.

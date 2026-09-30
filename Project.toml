@@ -3,7 +3,7 @@ uuid = "eb3a209b-12c7-484c-af99-a1186270a51f"
 authors = ["Jameson Nash <vtjnash@gmail.com>"]
 version = "0.1.0"
 
-# The box glyphs and the weights arrive through `TermInput`, which is also where
+# The box glyphs and the faces arrive through `TermInput`, which is also where
 # the measuring under them is.
 [deps]
 Base64 = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
@@ -18,12 +18,14 @@ TermInput = {path = "../TermInput.jl"}
 
 [compat]
 Base64 = "1"
+StyledStrings = "1"
 TermInput = "0.1"
 tmux_jll = "3.5"
 julia = "1.10"
 
 [extras]
+StyledStrings = "f489334b-da3d-4c2e-b8f0-e476e12c162b"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Test"]
+test = ["StyledStrings", "Test"]

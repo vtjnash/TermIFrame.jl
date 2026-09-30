@@ -17,6 +17,12 @@ import TermIFrame: mux, mux_cmd, mux_spawn, mux_line, bundled_tmux, standalone,
     mux_close, MUX_PIPE, MUX_BELLS, MUX_TITLES, pipe_session, mux_version,
     bordered, iframe_wheel!, iframe_drag!, retarget_mouse, WHEEL_ROWS, PAUSE_AFTER
 
+import TermInput
+import TermInput: Row, faced, verbatim, rowwidth, frame_bytes
+import StyledStrings: Face, SimpleColor
+# What StyledStrings writes for a row, which is what the terminal is sent.
+ansi(r::AbstractString) = sprint(print, r; context = :color => true)
+
 @testset "TermIFrame" begin
 
 @testset "naming a session" begin
@@ -200,46 +206,55 @@ end
     @test passthrough("\e[2J\e[H") == String[]
 end
 
-# The escape-aware measuring these draw against is `TermInput`'s now, and so is
-# its suite: `awidth`, `afit`, `apad`, `amid` and `awrap` are tested where they
-# live. What is below is this package's use of them.
+# The measuring these draw against is `TermInput`'s, and so is its suite:
+# `rowwidth`, `rowfit`, `rowpad` and `verbatim` are tested where they live.
+# What is below is this package's use of them.
 
 @testset "the box round it" begin
+    green = faced("green", Face(foreground = SimpleColor(:green)))
     # Every row exactly the width asked for, and exactly as many rows.
     for (w, h) in ((30, 5), (80, 24), (12, 3))
-        rs = bordered(["\e[32mgreen\e[0m plain", "second"], w, h, "demo"; focused = true)
+        rs = bordered([TermInput.rowcat(green, " plain"), "second"], w, h, "demo"; focused = true)
         @test length(rs) == h
-        @test all(awidth(r) == w for r in rs)
+        @test all(rowwidth(r) == w for r in rs)
+        @test all(r -> textwidth(TermInput.astrip(ansi(r))) == w, rs)
     end
     # The content is in there, colour and all, and the title with it.
-    rs = bordered(["\e[32mgreen\e[0m"], 30, 4, "demo"; focused = true)
-    @test occursin("green", join(rs)) && occursin("\e[32m", join(rs))
-    @test occursin("demo", astrip(rs[1]))
+    rs = bordered([green], 30, 4, "demo"; focused = true)
+    @test occursin("green", join(String.(rs))) && occursin("\e[32m", join(ansi.(rs)))
+    @test occursin("demo", String(rs[1]))
+    # A screen's row is somebody else's escapes, carried as they are and taken
+    # at the width it says: never measured, cut into or restyled.
+    raw = "\e[31mred\e[1m and more"
+    rs = bordered([verbatim(raw, 26)], 30, 3, "demo")
+    @test rowwidth(rs[2]) == 30 && occursin(raw, ansi(rs[2]))
+    @test occursin(string(raw, "\e[0m\e[29G"), String(frame_bytes(rs)))
     # A title too long for the box is cut rather than pushing the corner off.
     rs = bordered(String[], 20, 3, "a title far too long to fit in here";
                   focused = false)
-    @test all(awidth(r) == 20 for r in rs)
+    @test all(rowwidth(r) == 20 for r in rs)
     # And the box characters are `CHROME[].box`, which is what the host's
     # composers and dialogs are drawn with too.
-    @test occursin(string(TermIFrame.boxstyle().top.left), astrip(rs[1]))
+    @test occursin(string(TermIFrame.boxstyle().top.left), String(rs[1]))
     # A gutter mark stands in the left border and its pad, on its row alone;
     # the rows keep their width, and a mark too wide for the two columns is
     # left off rather than cut to an ellipsis.
     ml = string(TermIFrame.boxstyle().mid.left)
     rs = bordered(["one", "two", "three"], 20, 5, "g"; focused = true,
-                  gutter = ["", "\e[36m💬\e[0m", "wide!"])
-    @test all(awidth(r) == 20 for r in rs)
-    @test startswith(astrip(rs[2]), ml * " one")
-    @test startswith(astrip(rs[3]), "💬two")
-    @test startswith(astrip(rs[4]), ml * " three")
-    # The weights a host passes paint the whole iframe, border and footer: the
+                  gutter = ["", faced("💬", Face(foreground = SimpleColor(:cyan))), "wide!"])
+    @test all(rowwidth(r) == 20 for r in rs)
+    @test startswith(String(rs[2]), ml * " one")
+    @test startswith(String(rs[3]), "💬two") && occursin("\e[36m💬", ansi(rs[3]))
+    @test startswith(String(rs[4]), ml * " three")
+    # The faces a host passes paint the whole iframe, border and footer: the
     # footer painted from the global while the border took the argument would
-    # be one box in two sets of weights.
-    ch = (strong = "\e[31m", quiet = "\e[32m", focus = "\e[7m", reset = "\e[0m")
+    # be one box in two sets of faces.
+    ch = (strong = Face(foreground = SimpleColor(:red)), quiet = Face(foreground = SimpleColor(:green)),
+          focus = Face(inverse = true), box = TermIFrame.boxstyle())
     rs = iframe_rows(IFrame("n", "t"), 30, 6; focused = false, chrome = ch)
-    @test length(rs) == 6 && all(awidth(r) == 30 for r in rs)
-    @test startswith(rs[1], ch.quiet) && startswith(rs[end], ch.quiet)
-    @test !any(r -> occursin(TermIFrame.CHROME[].quiet, r), rs)
+    @test length(rs) == 6 && all(rowwidth(r) == 30 for r in rs)
+    @test startswith(ansi(rs[1]), "\e[32m") && startswith(ansi(rs[end]), "\e[32m")
+    @test !any(r -> occursin("\e[2m", ansi(r)), rs)
 end
 
 @testset "the box the child is given" begin
@@ -282,12 +297,13 @@ else
         @test length(f.frame) == rows              # the height it was just given
         @test occursin("green", join(f.frame))
         @test occursin("\e[", join(f.frame))       # colour kept, not stripped
-        # Every row is closed off, or an unterminated colour would run out of
-        # the content and into the border.
-        @test all(endswith(l, "\e[0m") for l in f.frame)
-
         out = iframe_rows(f, 80, 24)
-        @test length(out) == 24 && all(awidth(r) == 80 for r in out)
+        @test length(out) == 24 && all(rowwidth(r) == 80 for r in out)
+        # Every row of the screen is in the box as it was read, and closed
+        # when it is written, or an unterminated colour would run out of the
+        # content and into the border.
+        fb = String(frame_bytes(out))
+        @test all(l -> occursin(string(l, "\e[0m\e[", 3 + cols, "G"), fb), f.frame)
 
         # A different size re-sizes the child, not just the box round it.
         cols2, rows2 = iframe_box(120, 40)
@@ -295,7 +311,7 @@ else
         @test f.sized == (cols2, rows2)
         @test length(f.frame) == rows2
         out = iframe_rows(f, 120, 40)
-        @test length(out) == 40 && all(awidth(r) == 120 for r in out)
+        @test length(out) == 40 && all(rowwidth(r) == 120 for r in out)
 
         # Tags are what a session *is*, as against what it is called, and they
         # come back on the row.
@@ -321,7 +337,7 @@ else
         @test r.tags == [pwd(), "shell", "x;", "https://example.com/1"]
         iframe_sync!(f, (cols2, rows2))
         @test f.childtitle == t
-        @test occursin(string("demo  \u00b7  ", t), first(iframe_rows(f, 120, 40)))
+        @test occursin(string("demo  \u00b7  ", t), String(first(iframe_rows(f, 120, 40))))
         # The id is the session's, whatever it is called.
         @test mux_rename(n, n * "-r")
         @test only(filter(x -> x.name == n * "-r", mux_list(P))).id == r.id
@@ -783,7 +799,7 @@ else
         @test iframe_note(f) === nothing
         # And the box still draws with no child behind it.
         out = iframe_rows(f, 40, 10)
-        @test length(out) == 10 && all(awidth(r) == 40 for r in out)
+        @test length(out) == 10 && all(rowwidth(r) == 40 for r in out)
         mux_kill(n)
     end
 

@@ -40,18 +40,19 @@ one prefix key - `^]` - which is the only key the child never gets.
 
   * `tmux.jl`    sessions: name one, start it, tag it, list them, attach
   * `control.jl` `tmux -C`, as a protocol, as a client, and as the command pipe
-  * `border.jl`  the box, in `TermInput`'s box characters and weights
+  * `border.jl`  the box, in `TermInput`'s box characters and faces
   * `iframe.jl`  the widget: size, screen, cursor, mouse, scrollback, prefix
 
 ## What TermInput gives it
 
-The border is `TermInput.CHROME[]`'s box and weights, so an iframe beside a
-composer or a dialog is bordered the way they are. The measuring comes from
-there too - `awidth`, `astrip`, `afit`, `apad`, `amid` and `awrap`,
-re-exported here - since a captured screen is a child program's raw SGR and
-OSC 8, and a measure of markup counts those as characters. It lives in
-`TermInput` because a text field needs exactly the same thing and must not
-pull a tmux binary in to get it.
+The border is `TermInput.CHROME[]`'s box and faces, so an iframe beside a
+composer or a dialog is bordered the way they are, and its rows are
+`TermInput`'s rows of faces, with a captured screen's row carried inside as a
+verbatim piece - the child's raw SGR and OSC 8, as tmux gave them, never
+measured. The measuring comes from there too - `awidth`, `astrip`, `afit`,
+`apad`, `amid` and `awrap`, re-exported here. It lives in `TermInput` because
+a text field needs exactly the same thing and must not pull a tmux binary in
+to get it.
 """
 module TermIFrame
 
@@ -61,9 +62,9 @@ using Base64: base64encode
 # host laying an iframe out beside something else needs it as much as this does.
 using TermInput
 # Public in `TermInput` and not exported there, so imported by name: the box a
-# border follows and the weights it is painted in, and the pattern `iframe.jl`
+# border follows and the faces it is painted in, the row it is drawn as, and the pattern `iframe.jl`
 # steps over escapes with.
-import TermInput: ESCAPE, boxstyle, CHROME
+import TermInput: ESCAPE, boxstyle, CHROME, Row, row, verbatim
 
 # Exported: what a host embedding a session writes, with names specific enough
 # that it is unlikely to have them already - the measuring re-exported from

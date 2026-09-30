@@ -33,9 +33,8 @@ c = f.client
 
 box = iframe_box(w, h)                   # the child's (cols, rows) inside your box
 iframe_sync!(f, box)                     # size it, read its screen back
-for line in iframe_rows(f, w, h)         # `h` rows of exactly `w` columns
-    println(line)
-end
+rows = iframe_rows(f, w, h)              # `h` rows of exactly `w` columns
+write(stdout, frame_bytes(rows))         # TermInput's frame, the child's rows as they are
 r = iframe_input!(f, bytes, iframe_origin(x, y), box)
 while r isa UInt8                         # the key typed after ^]
     your_key!(f, r)                      # leave, kill, full screen: yours
@@ -94,15 +93,20 @@ bordered` where it is wanted.
 
 ## What TermInput gives it
 
-The border is drawn with `TermInput`'s box characters and weights,
+The border is drawn with `TermInput`'s box characters and faces,
 `CHROME[]` - so an iframe beside a composer or a dialog is bordered the way it
-is, and a host that sets them moves both.
+is, and a host that sets them moves both. The rows are `TermInput`'s too: a
+`Row` is an annotated string, faces over text, measured by its text, and
+`iframe_rows` and `bordered` answer them for `TermInput.frame_bytes` to write.
 
-The measuring is display widths, and deliberately so. A captured screen is a
-child program's raw SGR and OSC 8 hyperlinks, and a measure of markup - Term's
-`Panel` - counts them as characters: content that fits gets wrapped, and the
-panel then elides its own tail. So `awidth`, `afit` and `apad` work against
-real display widths.
+A captured screen is not parsed into one. It is a child program's raw SGR and
+OSC 8 hyperlinks as tmux gave them, and a round trip through faces would lose
+what a face cannot say - blink, overline, a palette index past fifteen - so a
+row of it is a `verbatim` piece of the box's row: written as it is, as wide as
+the pane it was read from, and never measured, cut or restyled after the one
+thing done to it here, copy mode's selection painted in. tmux sized the pane to
+the box, so each row fits; `frame_bytes` closes a piece after writing it and
+moves the cursor past its width, however little of it tmux filled.
 
 Both halves come through [`TermInput.jl`](https://github.com/vtjnash/TermInput.jl),
 which is this package's only dependency besides `tmux_jll`: a text field needs
