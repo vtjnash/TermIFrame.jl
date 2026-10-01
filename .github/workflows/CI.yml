@@ -42,7 +42,7 @@ jobs:
             os: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Nothing to install: `tmux_jll` is a dependency and its binary is what
       # `mux_bin` runs, `PATH` being deliberately not consulted. So every row
