@@ -443,7 +443,7 @@ const WHEEL_ROWS = 3
 """How long a drag held past the top or bottom of the box waits between rows,
 in seconds. A rate of its own, as in every terminal: one row per motion
 reported scrolls only while the pointer moves, and as fast as it does."""
-const DRAG_SCROLL = Ref(0.05)
+const DRAG_SCROLL = Ref(0.025)
 
 """
     iframe_wheel!(f, b) -> Bool
