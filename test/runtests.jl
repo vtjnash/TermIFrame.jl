@@ -15,7 +15,7 @@ import TermIFrame: mux, mux_cmd, mux_spawn, mux_line, bundled_tmux, standalone,
     mux_continue!, mux_relay!, mux_sync!, mux_ask, mux_capture, mux_pane_state,
     CopyMode, copy_selected, mux_paste, mux_brackets, mux_resize, mux_keys,
     mux_close, MUX_PIPE, MUX_BELLS, MUX_TITLES, pipe_session, mux_version,
-    bordered, iframe_wheel!, page_keys!, iframe_drag!, retarget_mouse, WHEEL_ROWS, PAUSE_AFTER,
+    bordered, iframe_wheel!, page_keys!, iframe_drag!, retarget_mouse, WHEEL_ROWS, DRAG_SCROLL, PAUSE_AFTER,
     ESCAPE, unescaped
 
 import TermInput
@@ -717,22 +717,57 @@ else
 
         # Dragged past the top, the view scrolls a row under it; the wheel
         # moves the mode's view while it is up; and the view stays where the
-        # mode had got to once it has gone.
+        # mode had got to once it has gone. The ticker held off, so that a row
+        # of its own does not land among them.
+        was = DRAG_SCROLL[]
+        DRAG_SCROLL[] = 60.0
         out = caught(() -> begin
             iframe_input!(f, sgr(0, 0, 3), origin, box)
             iframe_input!(f, sgr(32, 0, -1), origin, box)
             @test f.copy.scroll == 1
             @test f.copy.sel == (0, hist + 3, 0, hist - 1)
+            # Moving across past the edge scrolls no further: that is the
+            # ticker's, not the motion's.
+            iframe_input!(f, sgr(32, 2, -1), origin, box)
+            @test f.copy.scroll == 1
             iframe_input!(f, sgr(64, 5, 5), origin, box)
             @test f.copy.scroll == 1 + WHEEL_ROWS
             iframe_input!(f, sgr(0, 0, -1, 'm'), origin, box)
         end)
+        DRAG_SCROLL[] = was
+        @test f.ticker === nothing
         @test f.copy === nothing && f.scroll == 1 + WHEEL_ROWS
         @test occursin("\e]52;", out)
         @test first(mux_ask(c, "delete-buffer"))
         # Typing is back to the live screen, as it always was.
         iframe_input!(f, UInt8[UInt8(' ')], origin, box)
         @test f.scroll == 0
+
+        # Held past the bottom without moving, the drag goes on scrolling, a
+        # row each time the ticker wakes the client - the host's own loop,
+        # stood in for here - and stops once the pointer is back over the box.
+        iframe_input!(f, sgr(0, 0, 3), origin, box)
+        iframe_input!(f, sgr(32, 0, 2), origin, box)
+        iframe_input!(f, sgr(64, 0, 2), origin, box)      # somewhere to go down to
+        back = f.copy.scroll
+        @test back >= WHEEL_ROWS
+        iframe_input!(f, sgr(32, 0, box[2]), origin, box)
+        @test f.copy.scroll == back - 1 && f.ticker !== nothing
+        # A wake is also the child's output, which takes no step: waited for
+        # until two have been taken, the second needing no motion either.
+        t0 = time()
+        while f.copy.scroll > back - 3 && time() - t0 < 5
+            @test mux_wait(c)
+            iframe_sync!(f, box)
+        end
+        @test f.copy.scroll == back - 3
+        @test time() - t0 >= DRAG_SCROLL[]
+        iframe_input!(f, sgr(32, 0, 4), origin, box)
+        @test f.ticker === nothing
+        iframe_input!(f, sgr(0, 0, 4, 'm'), origin, box)
+        @test f.copy === nothing && f.scroll == back - 3
+        @test first(mux_ask(c, "delete-buffer"))
+        iframe_input!(f, UInt8[UInt8(' ')], origin, box)
 
         # A child that asked for the mouse still gets the drag, unchanged.
         f.wantsmouse = true

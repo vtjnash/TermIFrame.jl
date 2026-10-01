@@ -67,6 +67,9 @@ mutable struct IFrame
     press::Union{Nothing,Tuple{Int,Int}}  # where a button went down, in the
                                    # child's cells, until it comes up again
     dragging::Bool                 # that press has become a selection
+    pointer::Tuple{Int,Int}        # where the drag is now, in the child's cells
+    ticker::Union{Nothing,Timer}   # the next row of a drag held past an edge;
+                                   # due once it has fired
     exited::Union{Nothing,Int}     # the child's exit status, when it failed and
                                    # the server kept its pane to show why
     childtitle::String             # the title the child set, drawn on the
@@ -88,7 +91,7 @@ box, the footer, which keys are whose - answers the same way either way.
 IFrame(name::AbstractString, title::AbstractString = ""; out::IO = stdout) =
     IFrame(String(name), String(title), nothing, String[], (0, 0), "", false,
            (0, 0, false), false, 0, 0, false, false, nothing, UInt8[], UInt8[],
-           nothing, nothing, false, nothing, "", out)
+           nothing, nothing, false, (0, 0), nothing, nothing, "", out)
 
 """
     iframe(name, title; pause = PAUSE_AFTER, out = stdout) -> IFrame | Nothing
@@ -117,7 +120,7 @@ function iframe(name::AbstractString, title::AbstractString; pause::Integer = PA
     c === nothing && return nothing
     IFrame(String(name), String(title), c, String[], (0, 0), "", false,
            (0, 0, false), false, 0, 0, false, false, nothing, UInt8[], UInt8[],
-           nothing, nothing, false, nothing, "", out)
+           nothing, nothing, false, (0, 0), nothing, nothing, "", out)
 end
 
 """How long, in seconds, a pane's output can go unread before the server pauses
@@ -215,6 +218,15 @@ function iframe_sync!(f::IFrame, box::NTuple{2,Int})
     # was valid a moment ago, and the alternate screen going up ends the whole
     # question.
     f.scroll = alt ? 0 : clamp(f.scroll, 0, hist)
+    # A drag held past an edge is a row further each time its ticker fires,
+    # which is the wake that brought the host here - and only then, so output
+    # from the child arriving meanwhile does not hurry it.
+    if f.dragging && f.ticker !== nothing && !isopen(f.ticker)
+        x, y = f.pointer
+        drag_step!(f, y < 0, box)
+        copy_goto(f, clamp(x, 0, first(box) - 1), clamp(y, 0, last(box) - 1))
+        iframe_sync!(f, box)
+    end
     true
 end
 
@@ -428,6 +440,11 @@ const IFRAME_PREFIX = 0x1d
 """How far one notch of the wheel moves, in rows."""
 const WHEEL_ROWS = 3
 
+"""How long a drag held past the top or bottom of the box waits between rows,
+in seconds. A rate of its own, as in every terminal: one row per motion
+reported scrolls only while the pointer moves, and as fast as it does."""
+const DRAG_SCROLL = Ref(0.05)
+
 """
     iframe_wheel!(f, b) -> Bool
 
@@ -587,8 +604,11 @@ itself. `(x, y)` is the child's cell, 0-based, and may be outside the box once
 a drag has begun. `down` is false for the button coming up.
 
 A press alone is nothing, as in tmux: copy mode starts on the first motion,
-at the cell pressed, and each motion after moves the selection's end there -
-past the top or the bottom it scrolls a row first. The button coming up
+at the cell pressed, and each motion after moves the selection's end there.
+Past the top or the bottom it scrolls a row at once, and then a row every
+[`DRAG_SCROLL`](@ref) until the pointer is back over the box or the button
+comes up, whether or not it moves: a timer wakes the client, and the sync
+that wake brings takes the step ([`iframe_sync!`](@ref)). The button coming up
 copies it, into tmux's buffers and onto the terminal's clipboard, and leaves
 the mode, and the view stays where the mode had got to.
 
@@ -601,6 +621,7 @@ function iframe_drag!(f::IFrame, b::Int, x::Int, y::Int, down::Bool,
     btn = b & ~0x1c
     cols, rows = box
     if !down
+        drag_held!(f, false)
         f.dragging && copy_finish!(f, box)
         f.press, f.dragging = nothing, false
     elseif btn == 0
@@ -616,16 +637,36 @@ function iframe_drag!(f::IFrame, b::Int, x::Int, y::Int, down::Bool,
             copy_goto(f, f.press...)
             copy_cmd(f, "begin-selection")
         end
-        if y < 0 || y >= rows
-            copy_cmd(f, y < 0 ? "scroll-up" : "scroll-down")
-            # The row the cursor goes to is a new one, and its width is what
-            # a column is clamped to.
-            iframe_sync!(f, box)
-        end
+        f.pointer = (x, y)
+        past = y < 0 || y >= rows
+        # The first motion past an edge scrolls; the ones after it only move
+        # across, and the ticker scrolls.
+        past && f.ticker === nothing && drag_step!(f, y < 0, box)
+        drag_held!(f, past)
         copy_goto(f, clamp(x, 0, cols - 1), clamp(y, 0, rows - 1))
         iframe_sync!(f, box)
     end
     nothing
+end
+
+"""One row of a drag past an edge: the mode's view scrolled, the screen read
+back - the row the cursor goes to is a new one, and its width is what a column
+is clamped to - and the ticker armed for the next."""
+function drag_step!(f::IFrame, up::Bool, box::NTuple{2,Int})
+    copy_cmd(f, up ? "scroll-up" : "scroll-down")
+    drag_held!(f, false)
+    c = f.client
+    c === nothing && return
+    # Armed before the sync, so the sync finds it not yet due.
+    f.ticker = Timer(_ -> notify(c.wake), DRAG_SCROLL[])
+    iframe_sync!(f, box)
+end
+
+"""The pointer is past an edge, or it is not: when not, the ticker stops."""
+function drag_held!(f::IFrame, past::Bool)
+    past && return
+    f.ticker === nothing || close(f.ticker)
+    f.ticker = nothing
 end
 
 """One copy-mode command to the pane: `send -X`, repeated `n` times, or with
@@ -876,6 +917,7 @@ kept for this (`exited`): once it has been seen there is nothing left running,
 and letting go of it is ending it.
 """
 function iframe_close!(f::IFrame)
+    drag_held!(f, false)
     f.client === nothing || mux_close(f.client)
     f.exited === nothing || (mux_kill(f.name); f.exited = nothing)
     nothing
