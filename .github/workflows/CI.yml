@@ -47,7 +47,7 @@ jobs:
       # Nothing to install: `tmux_jll` is a dependency and its binary is what
       # `mux_bin` runs, `PATH` being deliberately not consulted. So every row
       # here drives a real server, with the same build on both platforms.
-      - uses: julia-actions/setup-julia@v2
+      - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.version }}
       - uses: julia-actions/cache@v2
