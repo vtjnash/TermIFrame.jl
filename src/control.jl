@@ -182,6 +182,17 @@ function mux_unescape(s::AbstractString)
     String(take!(out))
 end
 
+"""What the reader hands [`mux_ask`](@ref): a reply's `(ok, lines)`, or
+`nothing` from the timer an ask sets, when its timeout passes first.
+Typed, so that everything read off a reply is."""
+const Reply = Union{Tuple{Bool,Vector{String}},Nothing}
+
+"""Seconds [`mux_ask`](@ref) and [`mux_sync!`](@ref) wait for a reply, unless
+told otherwise, before the client is taken for dead. A server that stopped
+answering would otherwise leave the asking task - the host's own loop - waiting
+for ever."""
+const REPLY_WAIT = 5.0
+
 """An attached control-mode client.
 
 What the reader hears is kept here for the host to read, rather than handed to
@@ -213,7 +224,7 @@ mutable struct MuxClient
     name::String
     proc::Base.Process
     proto::MuxProto
-    replies::Channel{Any}
+    replies::Channel{Reply}
     lock::ReentrantLock
     wake::Base.Event
     relay::Vector{String}
@@ -257,8 +268,8 @@ a host that redraws on output alone never looks again. It went on showing the
 child's final screen, with every key sent to a client that was already dead.
 """
 function mux_open(name::AbstractString; flags::AbstractString = "")
-    cmd = isempty(flags) ? mux_cmd("-C", "attach", "-t=" * String(name)) :
-                           mux_cmd("-C", "attach", "-f", String(flags), "-t=" * String(name))
+    cmd = isempty(flags) ? mux_cmd("-C", "attach", string("-t=", name)) :
+                           mux_cmd("-C", "attach", "-f", String(flags)::String, string("-t=", name))
     cmd === nothing && return nothing
     mux_alive(name) || return nothing
     proc = try
@@ -266,7 +277,7 @@ function mux_open(name::AbstractString; flags::AbstractString = "")
     catch
         return nothing
     end
-    c = MuxClient(String(name), proc, MuxProto(), Channel{Any}(Inf), ReentrantLock(),
+    c = MuxClient(String(name), proc, MuxProto(), Channel{Reply}(Inf), ReentrantLock(),
                   Base.Event(true), String[], Dict{String,Base.RefValue{String}}(),
                   false, Dict{String,String}(), 0, String[], false, nothing, false, "")
     c.reader = @async mux_read(c)
@@ -283,9 +294,16 @@ function mux_read(c::MuxClient)
     try
         for line in eachline(c.proc.out)
             kind, a, b = mux_feed!(c.proto, line)
+            kind === :more && continue
             if kind === :reply
-                put!(c.replies, (a, b))
-            elseif kind === :output
+                put!(c.replies, (a::Bool, b::Vector{String}))
+                continue
+            end
+            # The other two kinds are two strings each; said so once here,
+            # since the tag that says which shape is not something the types
+            # of `a` and `b` follow.
+            a, b = a::String, b::String
+            if kind === :output
                 c.outputs += 1
                 # What a redraw cannot carry - the clipboard and nothing else,
                 # for the reasons in `passthrough` - kept for the host to take
@@ -389,7 +407,7 @@ function mux_relay!(c::MuxClient)
 end
 
 """
-    mux_sync!(c; timeout) -> Bool
+    mux_sync!(c; timeout = REPLY_WAIT) -> Bool
 
 Line the reply stream up with the commands, and say whether it worked.
 
@@ -404,7 +422,7 @@ Draining a fixed number of blocks would only work until a version emitted a
 different number of them. A token nothing else could produce does not care:
 throw replies away until the one that echoes it comes back.
 """
-function mux_sync!(c::MuxClient; timeout::Real = 5.0)
+function mux_sync!(c::MuxClient; timeout::Real = REPLY_WAIT)
     @lock c.lock mux_sync_locked!(c, timeout)
 end
 
@@ -421,14 +439,14 @@ function mux_sync_locked!(c::MuxClient, timeout::Real)
     while true
         left = deadline - time()
         left <= 0 && break
-        late = Timer(_ -> (isopen(c.replies) && put!(c.replies, :timeout)), left)
+        late = Timer(_ -> (isopen(c.replies) && put!(c.replies, nothing)), left)
         r = try
             take!(c.replies)
         finally
             close(late)
         end
-        r === :timeout && break
-        if r isa Tuple && length(r[2]) == 1 && strip(r[2][1]) == tok
+        r === nothing && break
+        if length(r[2]) == 1 && strip(r[2][1]) == tok
             return true
         end
     end
@@ -437,7 +455,7 @@ function mux_sync_locked!(c::MuxClient, timeout::Real)
 end
 
 """
-    mux_ask(c, cmd; timeout) -> (ok, lines)
+    mux_ask(c, cmd; timeout = REPLY_WAIT) -> (ok, lines)
 
 Send one command and wait for its reply.
 
@@ -448,7 +466,7 @@ it kills the client instead of desynchronising it. For the same reason the
 ask holds the client's lock from the write to the reply: two tasks asking at
 once would otherwise each take the other's answer.
 """
-function mux_ask(c::MuxClient, cmd::AbstractString; timeout::Real = 5.0)
+function mux_ask(c::MuxClient, cmd::AbstractString; timeout::Real = REPLY_WAIT)
     @lock c.lock mux_ask_locked(c, cmd, timeout)
 end
 
@@ -461,10 +479,10 @@ function mux_ask_locked(c::MuxClient, cmd::AbstractString, timeout::Real)
         mux_dead!(c, "could not write to the control client")
         return (false, ["client closed"])
     end
-    late = Timer(_ -> (isopen(c.replies) && put!(c.replies, :timeout)), timeout)
+    late = Timer(_ -> (isopen(c.replies) && put!(c.replies, nothing)), timeout)
     try
         r = take!(c.replies)
-        if r === :timeout
+        if r === nothing
             mux_dead!(c, string("no reply in $(timeout)s to ", first(split(cmd, ' '))))
             return (false, ["timed out"])
         end
@@ -869,7 +887,8 @@ A tmux version as something to compare: `3.5a` is `(3, 5, 'a')`, and `3.5`
 function mux_version(v::AbstractString)
     m = match(r"(\d+)\.(\d+)([a-z]?)", v)
     m === nothing && return nothing
-    (parse(Int, m[1]), parse(Int, m[2]), isempty(m[3]) ? ' ' : m[3][1])
+    a, b, c = something(m[1]), something(m[2]), something(m[3])
+    (parse(Int, a), parse(Int, b), isempty(c) ? ' ' : c[1])
 end
 
 """End the sessions of pipes whose process is gone: a host that died
@@ -883,7 +902,7 @@ function mux_pipe_sweep(prefix::AbstractString)
         startswith(n, p) || continue
         pid = tryparse(Int, n[ncodeunits(p)+1:end])
         (pid === nothing || pid == getpid() || pid_alive(pid)) && continue
-        mux_spawn("kill-session", "-t=" * String(n))
+        mux_spawn("kill-session", string("-t=", n))
     end
 end
 

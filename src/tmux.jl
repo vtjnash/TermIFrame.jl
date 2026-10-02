@@ -420,11 +420,16 @@ name would otherwise quietly match nothing.
 """
 function mux_list(prefix::AbstractString,
                   tags::AbstractVector{<:AbstractString} = String[])
-    fmt = join(vcat(["#{session_name}", "#{session_id}", "#{pane_current_command}",
-                     "#{session_attached}", "#{window_bell_flag}"],
-                    String["#{@" * t * "}" for t in tags], [TITLE_FORMAT]), '\t')
+    # A loop, not `String[... for t in tags]`: a comprehension over an abstract
+    # vector is not inferred to be a `Vector`, and nor is anything made of it.
+    fields = ["#{session_name}", "#{session_id}", "#{pane_current_command}",
+              "#{session_attached}", "#{window_bell_flag}"]
+    for t in tags
+        push!(fields, string("#{@", t, "}"))
+    end
+    push!(fields, TITLE_FORMAT)
     ok, out = mux("list-panes", "-a",
-                  "-f", "#{&&:#{window_active},#{pane_active}}", "-F", fmt)
+                  "-f", "#{&&:#{window_active},#{pane_active}}", "-F", join(fields, '\t'))
     ok || return MuxRow[]
     n = 6 + length(tags)
     p = string(prefix, "-")
@@ -511,7 +516,7 @@ counts as somebody looking and which is gone on the next read (4 ms on 3.5a).
 For a host whose read mark and tmux's have to say the same thing: a mark that
 left the bell standing would leave the row unread whatever was pressed.
 """
-mux_seen!(name::AbstractString) = first(mux_spawn("-C", "attach", "-t=" * String(name)))
+mux_seen!(name::AbstractString) = first(mux_spawn("-C", "attach", string("-t=", name)))
 
 """
     mux_ring!(name) -> Bool
@@ -555,7 +560,7 @@ rather than blocking until the user is finished - tmux's own binding brings them
 back, and the host is left running in the session it was always in.
 """
 function mux_attach(name::AbstractString; suspend = f -> f())
-    cmd = mux_cmd("attach", "-t=" * String(name))
+    cmd = mux_cmd("attach", string("-t=", name))
     cmd === nothing && return false
     if !isempty(get(ENV, "TMUX", ""))
         # Spawned, never down the pipe: it moves the client that asked.

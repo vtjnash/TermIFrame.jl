@@ -168,8 +168,11 @@ reader: the host's own task, between its frames, is the one place nothing else
 is writing.
 """
 function iframe_sync!(f::IFrame, box::NTuple{2,Int})
-    f.client === nothing && return false
-    relay = mux_relay!(f.client)
+    # Copied, here and below: a test of the field does not narrow a later
+    # read of it.
+    c = f.client
+    c === nothing && return false
+    relay = mux_relay!(c)
     isempty(relay) || try
         foreach(seq -> print(f.out, seq), relay)
     catch
@@ -178,33 +181,33 @@ function iframe_sync!(f::IFrame, box::NTuple{2,Int})
     end
     # A pane the server paused while this was not reading is continued before
     # its screen is read, and the read is the resync.
-    mux_continue!(f.client)
+    mux_continue!(c)
     if box != f.sized
-        mux_resize(f.client, box[1], box[2]) && (f.sized = box)
+        mux_resize(c, box[1], box[2]) && (f.sized = box)
     end
     # The state first, since copy mode says how far back to read: its view is
     # the one on screen while it is up, whatever our own scroll was.
-    cx, cy, showing, mouse, hist, alt, copy, dead, f.childtitle = mux_pane_state(f.client)
-    lines = mux_capture(f.client; scroll = copy === nothing ? f.scroll : copy.scroll,
+    cx, cy, showing, mouse, hist, alt, copy, dead, f.childtitle = mux_pane_state(c)
+    lines = mux_capture(c; scroll = copy === nothing ? f.scroll : copy.scroll,
                         rows = last(f.sized))
-    if dead !== nothing && !f.client.dead
+    if dead !== nothing && !c.dead
         # The child failed and the server kept its pane: the screen as it
         # died, tmux's `Pane is dead` line at its foot, is what is kept here,
         # and then the child is gone as any other is - nothing can be typed at
         # a dead pane. The session stays until the iframe lets go of it.
-        f.frame = dead_screen(f.client, hist, last(f.sized))
+        f.frame = dead_screen(c, hist, last(f.sized))
         f.cursor, f.copy, f.scroll = (0, 0, false), nothing, 0
         f.exited = dead
         f.status = string("exited with status ", dead)
-        mux_close(f.client)
+        mux_close(c)
         f.client = nothing
         return true
     end
-    if f.client.dead
+    if c.dead
         # With the reason: a client that timed out on a reply is not a session
         # that ended, and the two want different things done about them.
-        f.status = isempty(f.client.why) ? "session ended" :
-                   string("session ended: ", f.client.why)
+        f.status = isempty(c.why) ? "session ended" :
+                   string("session ended: ", c.why)
         f.client = nothing
         return true
     end
@@ -221,7 +224,8 @@ function iframe_sync!(f::IFrame, box::NTuple{2,Int})
     # A drag held past an edge is a row further each time its ticker fires,
     # which is the wake that brought the host here - and only then, so output
     # from the child arriving meanwhile does not hurry it.
-    if f.dragging && f.ticker !== nothing && !isopen(f.ticker)
+    t = f.ticker
+    if f.dragging && t !== nothing && !isopen(t)
         x, y = f.pointer
         drag_step!(f, y < 0, box)
         copy_goto(f, clamp(x, 0, first(box) - 1), clamp(y, 0, last(box) - 1))
@@ -631,7 +635,8 @@ function iframe_drag!(f::IFrame, b::Int, x::Int, y::Int, down::Bool,
             end
             f.dragging = true
             f.scroll > 0 && copy_cmd(f, "scroll-up", f.scroll)
-            copy_goto(f, f.press...)
+            x0, y0 = something(f.press)
+            copy_goto(f, x0, y0)
             copy_cmd(f, "begin-selection")
         end
         f.pointer = (x, y)
@@ -662,7 +667,8 @@ end
 """The pointer is past an edge, or it is not: when not, the ticker stops."""
 function drag_held!(f::IFrame, past::Bool)
     past && return
-    f.ticker === nothing || close(f.ticker)
+    t = f.ticker
+    t === nothing || close(t)
     f.ticker = nothing
 end
 
@@ -671,10 +677,11 @@ an empty `cmd` the entering of the mode itself. One to an ask, never a `;`
 list: each command in a list is answered on its own, and the answers are
 matched to the asking by position."""
 function copy_cmd(f::IFrame, cmd::AbstractString, n::Int = 1)
-    f.client === nothing && return false
+    c = f.client
+    c === nothing && return false
     n > 0 || return true
     t = string(" -t =", f.name, ":")
-    first(mux_ask(f.client, isempty(cmd) ? string("copy-mode", t) :
+    first(mux_ask(c, isempty(cmd) ? string("copy-mode", t) :
                   string("send -X", n > 1 ? string(" -N ", n) : "", t, " ", cmd)))
 end
 
@@ -691,7 +698,9 @@ past it wraps to the next row.
 function copy_goto(f::IFrame, x::Int, y::Int)
     copy_cmd(f, "top-line")
     copy_cmd(f, "cursor-down", y)
-    ok, st = mux_ask(f.client, string("display-message -p -t =", f.name, ": '#{copy_cursor_x}'"))
+    c = f.client
+    c === nothing && return false
+    ok, st = mux_ask(c, string("display-message -p -t =", f.name, ": '#{copy_cursor_x}'"))
     at = ok && !isempty(st) ? something(tryparse(Int, strip(st[1])), 0) : 0
     line = y + 1 <= length(f.frame) ? rstrip(unescaped(f.frame[y + 1])) : ""
     d = chars_before(line, x) - chars_before(line, at)
@@ -791,12 +800,13 @@ marker cut in two by a read is put back together.
 """
 function iframe_input!(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
                        box::NTuple{2,Int})
-    f.client === nothing && return :gone
+    c = f.client
+    c === nothing && return :gone
     # A key that finds the client dead is the first the host has heard of it,
     # when no wake said so: it is spent on saying the session ended, as a
     # sync would have, and the next one leaves - rather than going to a
     # client that cannot send it, forever.
-    f.client.dead && (iframe_sync!(f, box); return :ok)
+    c.dead && (iframe_sync!(f, box); return :ok)
     if !isempty(f.held)
         bytes = vcat(f.held, bytes)
         empty!(f.held)
@@ -815,9 +825,10 @@ function iframe_input!(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
             end
             if f.brackets !== nothing || j !== nothing
                 live!(f, box)
-                f.client === nothing ? nothing :
-                f.brackets === nothing ? mux_paste(f.client, f.paste) :
-                                         mux_keys(f.client, f.paste)
+                c = f.client
+                c === nothing ? nothing :
+                f.brackets === nothing ? mux_paste(c, f.paste) :
+                                         mux_keys(c, f.paste)
                 empty!(f.paste)
             end
             j === nothing && return :ok
@@ -840,7 +851,8 @@ function iframe_input!(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
             end
             j === nothing && break
             f.pasting = true
-            f.brackets = f.client === nothing ? nothing : mux_brackets(f.client)
+            c = f.client
+            f.brackets = c === nothing ? nothing : mux_brackets(c)
             f.brackets === true && append!(f.paste, PASTE_START)
             i = last(j) + 1
         end
@@ -888,8 +900,9 @@ sends for `^]]`: the prefix itself, which [`iframe_input!`](@ref) never does.
 function iframe_send!(f::IFrame, bytes::AbstractVector{UInt8}, box::NTuple{2,Int})
     isempty(bytes) && return true
     live!(f, box)
-    f.client === nothing && return false
-    mux_keys(f.client, bytes)
+    c = f.client
+    c === nothing && return false
+    mux_keys(c, bytes)
 end
 
 """
@@ -915,7 +928,8 @@ and letting go of it is ending it.
 """
 function iframe_close!(f::IFrame)
     drag_held!(f, false)
-    f.client === nothing || mux_close(f.client)
+    c = f.client
+    c === nothing || mux_close(c)
     f.exited === nothing || (mux_kill(f.name); f.exited = nothing)
     nothing
 end
