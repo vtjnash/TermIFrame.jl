@@ -64,6 +64,9 @@ using TermInput
 # Public in `TermInput` and not exported there, so imported by name: the box a
 # border follows and the faces it is painted in, and the row it is drawn as.
 import TermInput: boxstyle, CHROME, Row, row, verbatim
+# And how far a notch of the wheel scrolls, which is one number for a screen
+# here and a list there; public here too, as it was before it moved.
+import TermInput: WHEEL_ROWS
 
 # Exported: what a host embedding a session writes, with names specific enough
 # that it is unlikely to have them already - sessions by name, the command pipe

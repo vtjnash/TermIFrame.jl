@@ -437,9 +437,6 @@ names several of them, a lone `a` reads as the word.
 """
 const IFRAME_PREFIX = 0x1d
 
-"""How far one notch of the wheel moves, in rows."""
-const WHEEL_ROWS = 3
-
 """How long a drag held past the top or bottom of the box waits between rows,
 in seconds. A rate of its own, as in every terminal: one row per motion
 reported scrolls only while the pointer moves, and as fast as it does."""
