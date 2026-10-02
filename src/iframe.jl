@@ -554,9 +554,12 @@ function retarget_mouse(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
             end
             if j <= n
                 fs = split(String(bytes[i+3:j-1]), ';')
-                nums = length(fs) == 3 ? tryparse.(Int, fs) : nothing
-                if nums !== nothing && !any(isnothing, nums)
-                    b, sx, sy = nums
+                # One at a time: a broadcast `tryparse` is not inferred, and the
+                # three are arithmetic below.
+                b, sx, sy = length(fs) == 3 ?
+                    (tryparse(Int, fs[1]), tryparse(Int, fs[2]), tryparse(Int, fs[3])) :
+                    (nothing, nothing, nothing)
+                if b !== nothing && sx !== nothing && sy !== nothing
                     cx, cy = sx - ox, sy - oy      # 0-based within the child
                     inside = 0 <= cx < cols && 0 <= cy < rows
                     down = bytes[j] == UInt8('M')
