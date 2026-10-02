@@ -1,0 +1,43 @@
+name: Documentation
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/master' }}
+
+# `deploydocs` pushes the built site to `gh-pages`, which is what GitHub Pages
+# serves: `dev/` from main, and a directory per tag with `stable/` the newest.
+permissions:
+  contents: write
+  statuses: write
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v3
+      # `TermInput` is not registered yet, and `docs/Project.toml` names it at
+      # `../TermInput.jl`, where the two sit side by side in a checkout.
+      - name: TermInput, until it is registered
+        run: git clone --depth 1 https://github.com/vtjnash/TermInput.jl ../TermInput.jl
+      - name: Install
+        run: julia --project=docs -e 'using Pkg; Pkg.instantiate()'
+      - name: Build and deploy
+        run: julia --project=docs docs/make.jl
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The deploy key, for the build of a tag TagBot made: a tag pushed
+          # with the workflow's own token starts no workflow, so TagBot pushes
+          # it with this key, and the same key lets that build deploy.
+          DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}

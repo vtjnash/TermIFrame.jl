@@ -1,0 +1,13 @@
+[deps]
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+TermIFrame = "eb3a209b-12c7-484c-af99-a1186270a51f"
+TermInput = "e53b28ee-00f8-475a-85b8-1918fdda0ee8"
+
+# The package is the checkout this sits in, not a registered version of it,
+# and `TermInput` is beside it until it is registered.
+[sources]
+TermIFrame = {path = ".."}
+TermInput = {path = "../../TermInput.jl"}
+
+[compat]
+Documenter = "1"

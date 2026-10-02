@@ -1,5 +1,8 @@
 # TermIFrame.jl
 
+[Documentation](https://vtjnash.github.io/TermIFrame.jl/dev/): this README, and every
+docstring.
+
 An iframe for the terminal: another program, running in a tmux session, drawn
 inside a box your own TUI lays out.
 
@@ -218,6 +221,17 @@ skip rather than fail.
 
 `TERMIFRAME_TMUX` points the whole suite at a particular binary, which is how to
 check a build other than the bundled one.
+
+## Documentation
+
+```bash
+julia --project=docs -e 'using Pkg; Pkg.instantiate()'
+julia --project=docs docs/make.jl
+```
+
+builds the site - with `TermInput.jl` checked out beside this, as for the tests - into `docs/build`: this README as its first page, and
+every docstring after it. CI builds it on every push and publishes `main`'s at
+the link at the top.
 
 ## License
 
