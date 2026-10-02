@@ -51,6 +51,13 @@ jobs:
         with:
           version: ${{ matrix.version }}
       - uses: julia-actions/cache@v3
+      # `TermInput` is not registered yet, and `[sources]` names it at
+      # `../TermInput.jl`, where the two sit side by side in a checkout. So it
+      # is put there, and developed by hand for 1.10, which has no `[sources]`.
+      - name: TermInput, until it is registered
+        run: |
+          git clone --depth 1 https://github.com/vtjnash/TermInput.jl ../TermInput.jl
+          julia --project=. -e 'using Pkg; Pkg.develop(path = "../TermInput.jl")'
       - uses: julia-actions/julia-buildpkg@v1
 
       # In the log, so a row that quietly stopped testing the server half is

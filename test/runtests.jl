@@ -1043,8 +1043,16 @@ end
 @testset "every exported or public name says what it is" begin
     # A name a host is told to import and cannot ask about is half an API.
     # `names` lists the public names on 1.11 and the exported ones before it.
+    # `Docs.hasdoc` is 1.11's. Before it, a docstring is in the `meta` of the
+    # module that owns the name - or, for a module, in that module's own.
+    function hasdoc(m, n)
+        isdefined(Docs, :hasdoc) && return Docs.hasdoc(m, n)
+        b = Docs.Binding(m, n)
+        v = getfield(m, n)
+        haskey(Docs.meta(v isa Module ? v : b.mod), b)
+    end
     api = setdiff(names(TermIFrame), [:TermIFrame])
-    @test isempty(filter(n -> !Docs.hasdoc(TermIFrame, n), api))
+    @test isempty(filter(n -> !hasdoc(TermIFrame, n), api))
     if VERSION >= v"1.11.0-DEV.469"
         # What this file imports by name is public, so a host can too.
         for n in (:mux, :bordered, :passthrough, :mux_open, :mux_keys,
