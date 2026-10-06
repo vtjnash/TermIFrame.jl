@@ -249,15 +249,17 @@ several times.
 `set` is [`standalone`](@ref)'s: what the program is to be handed, whatever
 the server holds.
 
-A child that fails - exits non-zero, or never runs at all - leaves its pane
-behind (`remain-on-exit failed`), so that what it said is still there to be
-read: an agent whose command was not found used to end its session before
-anything could attach, and the only word left was that nothing could. One
-that exits cleanly ends the session as before. The option is set before the
-command runs, and not after: the session starts on `cat`, which waits, and
-`respawn-pane -k` puts `cmd` in its place - down the pipe each command is its
-own round trip, and a command that fails at exec is gone inside one. A server
-too old to know `failed` (before 3.3) keeps nothing, as before.
+A child that exits leaves its pane behind (`remain-on-exit`), whatever its
+status: what it said is still there to be read, and [`mux_list`](@ref) says
+`dead` for as long as the session stands. An agent whose command was not found
+used to end its session before anything could attach, and the only word left
+was that nothing could; one that finished while nobody was watching was gone
+with whatever it had to say. Nothing ends the session but the host:
+[`iframe_close!`](@ref) on a pane whose child has gone, or [`mux_kill`](@ref).
+The option is set before the command runs, and not after: the session starts
+on `cat`, which waits, and `respawn-pane -k` puts `cmd` in its place - down
+the pipe each command is its own round trip, and a command that fails at exec
+is gone inside one.
 
 `pipe` is the prefix whose command pipe ([`mux_pipe_open`](@ref)) is opened
 while the session is still `cat`, so that the terminal's background
@@ -270,7 +272,7 @@ function mux_start(name::AbstractString, dir::AbstractString, cmd::AbstractStrin
     ok, out = mux("new-session", "-d", "-s", name, "-c", dir, "-P", "-F", "#{pane_id}", "cat")
     ok || return (false, isempty(out) ? "could not start session" : out)
     t = string("=", name, ":")
-    mux("set-option", "-w", "-t", t, "remain-on-exit", "failed")
+    mux("set-option", "-w", "-t", t, "remain-on-exit", "on")
     isempty(pipe) || mux_pipe_open(pipe)
     mux_seed(strip(out))
     # One trailing argument, so tmux hands the whole thing to a shell. Passing
@@ -375,7 +377,10 @@ const TITLE_FORMAT = "#{?#{==:#{pane_title},#{host}},,#{pane_title}}"
 rename, which the name does not, and is never reused while the server runs -
 a restart starts over at `\$0`, but a restart ends every session too. `tags`
 are the values of the user options `mux_list` was asked for, in that order,
-`""` for one never set; what they mean is the host's. `title` is the pane's
+`""` for one never set; what they mean is the host's. `dead` is a session
+whose child has exited and whose pane is kept to be read
+([`mux_start`](@ref)): nothing runs in it, and it says so until the host
+ends it - a state, where `bell` is a seen bit. `title` is the pane's
 title as its child set it, `""` where it never did ([`TITLE_FORMAT`](@ref)): an
 agent that names its conversation there says what it is doing.
 """
@@ -385,6 +390,7 @@ struct MuxRow
     command::String
     attached::Bool
     bell::Bool
+    dead::Bool
     tags::Vector{String}
     title::String
 end
@@ -399,7 +405,7 @@ session with three windows is still one line of it.
 
 `tags` names the user options set by [`mux_tag!`](@ref) to read back, as the
 host names them; their values come back in `tags`, in the same order, beside
-`name`, `id`, `command`, `attached` and `bell`. An argument and not a setting:
+`name`, `id`, `command`, `attached`, `bell` and `dead`. An argument and not a setting:
 the tags are the host's schema, and a host that keeps them in one place types
 its rows there. Rows come back sorted by name.
 
@@ -423,7 +429,7 @@ function mux_list(prefix::AbstractString,
     # A loop, not `String[... for t in tags]`: a comprehension over an abstract
     # vector is not inferred to be a `Vector`, and nor is anything made of it.
     fields = ["#{session_name}", "#{session_id}", "#{pane_current_command}",
-              "#{session_attached}", "#{window_bell_flag}"]
+              "#{session_attached}", "#{window_bell_flag}", "#{pane_dead}"]
     for t in tags
         push!(fields, string("#{@", t, "}"))
     end
@@ -431,7 +437,7 @@ function mux_list(prefix::AbstractString,
     ok, out = mux("list-panes", "-a",
                   "-f", "#{&&:#{window_active},#{pane_active}}", "-F", join(fields, '\t'))
     ok || return MuxRow[]
-    n = 6 + length(tags)
+    n = 7 + length(tags)
     p = string(prefix, "-")
     rows = MuxRow[]
     for line in split(out, '\n'; keepempty = false)
@@ -440,7 +446,8 @@ function mux_list(prefix::AbstractString,
         length(f) == n || continue
         startswith(f[1], p) || continue
         push!(rows, MuxRow(String(f[1]), String(f[2]), String(f[3]), f[4] != "0", f[5] == "1",
-                           String[String(x) for x in f[6:(end - 1)]], String(f[end])))
+                           f[6] == "1", String[String(x) for x in f[7:(end - 1)]],
+                           String(f[end])))
     end
     sort!(rows; by = r -> r.name)
     rows
@@ -526,6 +533,8 @@ Ring the session's bell, as its child would: a `BEL` on the pane's tty.
 The other half of [`mux_seen!`](@ref), for undoing it. Written to the tty and
 not sent as keys: `send-keys` is input to the child, and this is output from
 it. The flag is set only if nobody is attached, which is the rule for any bell.
+A pane whose child has exited has no tty left to ring, and the answer there is
+`false`.
 """
 function mux_ring!(name::AbstractString)
     # `-t name`, not `-t=name`: `display-message` takes `=name` without a

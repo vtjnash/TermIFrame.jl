@@ -33,13 +33,14 @@ from state it reads:
 
   * **redraw** when the client says something: [`mux_wait`](@ref) on `client`,
     which answers once more as the session ends.
-  * **the child exited**: a sync that found the client dead leaves `client`
-    `nothing` and says so in `status`. A child that *failed* is the same to
-    the host, with the screen it left in `frame` and its status in `exited`:
-    the server keeps its pane to be read ([`mux_start`](@ref)), and
-    [`iframe_close!`](@ref) is what lets it go. Whatever the host does about it - an
-    editor's file read back - is done once, by the host, which is the one that
-    knows what once means.
+  * **the child exited**: the server keeps its pane to be read
+    ([`mux_start`](@ref)), and the sync that finds it leaves `client`
+    `nothing`, the screen it left in `frame`, its status in `exited` and the
+    words for that in `status`; [`iframe_close!`](@ref) is what lets the
+    session go. A session that *ended* - killed, or its server gone - is the
+    same to the host with `exited` `nothing`. Whatever the host does about
+    either - an editor's file read back - is done once, by the host, which is
+    the one that knows what once means.
   * **a key after the prefix**: [`iframe_input!`](@ref) answers it, and the
     host does what it means with the tools here - leaving, killing, going full
     screen with its own way of handing the terminal over ([`mux_attach`](@ref)).
@@ -70,8 +71,8 @@ mutable struct IFrame
     pointer::Tuple{Int,Int}        # where the drag is now, in the child's cells
     ticker::Union{Nothing,Timer}   # the next row of a drag held past an edge;
                                    # due once it has fired
-    exited::Union{Nothing,Int}     # the child's exit status, when it failed and
-                                   # the server kept its pane to show why
+    exited::Union{Nothing,Int}     # the child's exit status, once it has gone
+                                   # and the server holds its pane to be read
     childtitle::String             # the title the child set, drawn on the
                                    # border after `title`; "" where it never did
     out::IO                        # the terminal it is drawn on, which what the
@@ -113,6 +114,17 @@ far behind` over a session that is still running.
 `out` is the terminal the iframe is drawn on - the host's, whatever stream it
 writes its frames to. What the child writes that a frame cannot carry, the
 clipboard, is relayed there ([`iframe_sync!`](@ref)).
+
+A child that exits leaves its pane ([`mux_start`](@ref)), so the session does
+not end and the client hears no `%exit`; tmux writes its `Pane is dead` line on
+the screen itself, which is no `%output` either. The child's last output is a
+wake, but one a sync answers before the exit behind it has landed (measured on
+3.7c: never seen, three of three). The command pipe is what is told
+([`MUX_DEAD`](@ref)), and a host that hears it there syncs its iframes; with
+no pipe, the next sync anything else brings on is what finds it. Not a
+subscription on this client: with one, a 3.7c server that pauses the pane
+never says `%pause`, nor anything after it - the line is queued behind the
+subscription's and nothing is left to flush them.
 """
 function iframe(name::AbstractString, title::AbstractString; pause::Integer = PAUSE_AFTER,
                 out::IO = stdout)
@@ -191,10 +203,10 @@ function iframe_sync!(f::IFrame, box::NTuple{2,Int})
     lines = mux_capture(c; scroll = copy === nothing ? f.scroll : copy.scroll,
                         rows = last(f.sized))
     if dead !== nothing && !c.dead
-        # The child failed and the server kept its pane: the screen as it
-        # died, tmux's `Pane is dead` line at its foot, is what is kept here,
-        # and then the child is gone as any other is - nothing can be typed at
-        # a dead pane. The session stays until the iframe lets go of it.
+        # The child exited and the server kept its pane: the screen as it
+        # went, tmux's `Pane is dead` line at its foot, is what is kept here,
+        # and the client is let go - nothing can be typed at a dead pane. The
+        # session stays until the iframe lets go of it.
         f.frame = dead_screen(c, hist, last(f.sized))
         f.cursor, f.copy, f.scroll = (0, 0, false), nothing, 0
         f.exited = dead
@@ -269,7 +281,9 @@ since the pane was resized to the box after it died and a box shorter than it
 pushed its top lines - often the only ones with anything in them - into the
 history. tmux writes `Pane is dead` on the bottom row, below however many
 blank ones the screen had left; those are its padding and not the child's, so
-they go, and the last `rows` lines are what is left.
+they go, and the last `rows` lines are what is left. Its line is found by
+those words and not by being last: in a box narrower than it is long it
+wraps, and the blank rows are above its first row.
 """
 function dead_screen(c::MuxClient, hist::Int, rows::Int)
     lines = mux_capture(c; scroll = hist, rows = hist + rows)
@@ -277,12 +291,14 @@ function dead_screen(c::MuxClient, hist::Int, rows::Int)
     while !isempty(lines) && blank(lines[end])
         pop!(lines)
     end
-    if !isempty(lines)
-        i = length(lines) - 1
+    k = something(findlast(l -> startswith(unescaped(l), "Pane is dead"), lines),
+                  length(lines))
+    if k >= 1
+        i = k - 1
         while i >= 1 && blank(lines[i])
             i -= 1
         end
-        lines = vcat(lines[1:i], lines[end:end])
+        lines = vcat(lines[1:i], lines[k:end])
     end
     length(lines) > rows ? lines[end-rows+1:end] : lines
 end
@@ -925,9 +941,9 @@ end
     iframe_close!(f)
 
 Let go of the child. The session keeps running - that is what a session is for;
-[`mux_kill`](@ref) is what ends one. Unless the child failed and its pane was
-kept for this (`exited`): once it has been seen there is nothing left running,
-and letting go of it is ending it.
+[`mux_kill`](@ref) is what ends one. Unless the child has exited and its pane
+was kept for this (`exited`): once it has been seen there is nothing left
+running, and letting go of it is ending it.
 """
 function iframe_close!(f::IFrame)
     drag_held!(f, false)

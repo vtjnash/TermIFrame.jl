@@ -807,6 +807,19 @@ titles_format(prefix::AbstractString) =
 """The name the title subscription is kept under in the pipe's `subs`."""
 const MUX_TITLES = "titles"
 
+"""The third: the sessions under `prefix` whose child has exited and whose pane
+is kept ([`mux_start`](@ref)), as their ids. A pane's own client is told
+nothing of it - no session ended, and the server's `Pane is dead` line is not
+output - so this is how a host drawing the pane hears that its child went:
+the change is a wake, and the host syncs its iframes ([`iframe_sync!`](@ref))
+or lists its sessions for which went ([`mux_list`](@ref))."""
+dead_format(prefix::AbstractString) =
+    string("#{S:#{?#{&&:#{m:", prefix, "-*,#{session_name}},#{pane_dead}},#{session_id} ,}}")
+
+"""The name the subscription to exited children is kept under in the pipe's
+`subs`."""
+const MUX_DEAD = "dead"
+
 """
     mux_pipe_open(prefix) -> MuxClient | Nothing
 
@@ -829,7 +842,8 @@ and the next to open a pipe ends it, since it would keep the server up.
 
 The bell subscription ([`bell_format`](@ref)), for `prefix`, is asked for here; `bells` on the
 client says whether it took, which a server before 3.2 would refuse. The
-title subscription ([`titles_format`](@ref)) beside it, where that one took. The
+title subscription ([`titles_format`](@ref)) and the one to children that have
+exited ([`dead_format`](@ref)) beside it, where that one took. The
 terminal's background, if the host has heard it, goes on every pane under
 `prefix` ([`mux_bg!`](@ref)). Answers
 `nothing` where there is no tmux or the attach failed, and [`mux`](@ref) goes on
@@ -850,6 +864,8 @@ function mux_pipe_open(prefix::AbstractString)
                                          string(MUX_BELLS, "::", bell_format(prefix))])))
     c.bells && mux_ask(c, mux_line(["refresh-client", "-B",
                                     string(MUX_TITLES, "::", titles_format(prefix))]))
+    c.bells && mux_ask(c, mux_line(["refresh-client", "-B",
+                                    string(MUX_DEAD, "::", dead_format(prefix))]))
     MUX_PIPE[] = c
     MUX_OLDER[] = mux_older(c)
     # Panes that were running before there was a pipe to seed them down.

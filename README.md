@@ -144,6 +144,12 @@ it is what a host lists its own sessions by, so that one started by hand is not
 its to list or kill. Nothing holds a host to one - two prefixes are two sets of
 sessions, listed apart.
 
+A session does not end when its child does. The pane is kept with what the
+child said and its status under it, and its row of `mux_list` says `dead`
+until the host ends it. An iframe opened on one shows that screen with the
+status in `exited`, and `iframe_close!` on it ends the session; `mux_kill`
+ends any.
+
 ## The command pipe
 
 Every session command is a `tmux` process by default, ~3 ms each. A host that
@@ -163,7 +169,10 @@ clears its bell, so the pipe is parked on a session of its own,
 the host's listings skip it, since it is named outside the prefix. It also subscribes to the bells of
 every session under that prefix: `mux_wait` on the pipe returns when one rings
 or is heard, or when a session starts or ends (`sessions` on the client), so a
-host hears a bell without listing the sessions on a clock. `switch-client` and
+host hears a bell without listing the sessions on a clock. A child exiting is
+heard there as well (`MUX_DEAD` in the client's `subs`), which is how a host
+drawing that pane learns of it - nothing ended, so the pane's own client is
+told nothing - and syncs its iframe. `switch-client` and
 the attach behind `mux_seen!` are always spawned: they are about the client
 that asks.
 

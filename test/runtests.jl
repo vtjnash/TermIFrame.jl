@@ -14,7 +14,7 @@ import TermIFrame: mux, mux_cmd, mux_spawn, mux_line, bundled_tmux, standalone,
     MUX_BG, MuxProto, mux_feed!, mux_unescape, passthrough, mux_open,
     mux_continue!, mux_relay!, mux_sync!, mux_ask, mux_capture, mux_pane_state,
     CopyMode, copy_selected, mux_paste, mux_brackets, mux_resize, mux_keys,
-    mux_close, MUX_PIPE, MUX_BELLS, MUX_TITLES, pipe_session, mux_version,
+    mux_close, MUX_PIPE, MUX_BELLS, MUX_TITLES, MUX_DEAD, pipe_session, mux_version,
     bordered, iframe_wheel!, page_keys!, iframe_drag!, retarget_mouse, WHEEL_ROWS, DRAG_SCROLL, PAUSE_AFTER,
     ESCAPE, unescaped
 
@@ -359,6 +359,7 @@ else
         # `bell` is the server's own seen bit, and attaching is what reads it.
         row() = only(filter(x -> x.name == n, mux_list(P)))
         @test row().attached === false && row().bell === false
+        @test row().dead === false             # its child is running
         ring() = (@test mux_ring!(n); sleep(0.2))
         ring()
         @test row().bell === true
@@ -826,20 +827,29 @@ else
     @testset "the child exiting is the host's to see" begin
         n = mux_name(P, "test", "onend")
         mux_kill(n)
-        mux_start(n, pwd(), "sh -c 'sleep 0.3'")
+        pipe = mux_pipe_open(P)
+        mux_start(n, pwd(), "sh -c 'echo last; sleep 0.3'")
         f = iframe(n, "brief")
         c = f.client
-        # The host waits on the client, and hears the end as one more wake.
+        id = only(filter(x -> x.name == n, mux_list(P))).id
+        # The host waits on the client, and reads the screen when it says
+        # something. The child's exit is nothing it says: the pane is kept,
+        # so no session ends and no `%exit` comes, and the sync its last
+        # output wakes is ahead of the exit. The pipe is what is told, and a
+        # host woken there syncs.
         woke = Ref(0)
-        t = @async (while mux_wait(c); woke[] += 1; end; woke[] += 1)
         box = iframe_box(40, 10)
-        for _ in 1:40
-            iframe_sync!(f, box)
-            f.client === nothing && break
-            sleep(0.25)
-        end
-        @test f.client === nothing && occursin("session ended", f.status)
+        t = @async (while mux_wait(c); woke[] += 1; end; woke[] += 1)
+        @test timedwait(() -> id in split(get(pipe.subs, MUX_DEAD, "")), 5.0) === :ok
+        @test !c.dead
+        @test iframe_sync!(f, box) === true
+        @test f.client === nothing && f.exited == 0
+        @test occursin("exited with status 0", f.status)
+        @test any(l -> occursin("last", l), unescaped.(f.frame))
         @test timedwait(() -> istaskdone(t), 2.0) === :ok && woke[] >= 1
+        # The session is there, with nothing running in it, until the iframe
+        # lets go.
+        @test only(filter(x -> x.name == n, mux_list(P))).dead
         # And a dead client answers at once, not never.
         @test mux_wait(c) === false
         # A later sync has nothing to find: what the host does about the end is
@@ -851,7 +861,22 @@ else
         # And the box still draws with no child behind it.
         out = iframe_rows(f, 40, 10)
         @test length(out) == 10 && all(rowwidth(r) == 40 for r in out)
+        iframe_close!(f)
+        @test !mux_alive(n)
+
+        # A session that is ended under the iframe - killed, its server gone -
+        # is the other way a child goes, and the one with no screen to keep.
+        mux_start(n, pwd(), "sleep 120")
+        f = iframe(n, "brief")
+        c = f.client
         mux_kill(n)
+        @test timedwait(() -> c.dead, 5.0) === :ok
+        @test iframe_sync!(f, box) === true
+        @test f.client === nothing && f.exited === nothing
+        @test occursin("session ended", f.status)
+        # The pipe is told of that one too: nothing of ours is dead now.
+        @test timedwait(() -> isempty(strip(get(pipe.subs, MUX_DEAD, "x"))), 5.0) === :ok
+        mux_pipe_close()
     end
 
     @testset "a host that stops reading has the pane paused, not dropped" begin
@@ -879,36 +904,37 @@ else
         mux_kill(n)
     end
 
-    @testset "a child that fails leaves its screen to be read" begin
+    @testset "a child that exits leaves its screen to be read" begin
         # An agent whose command was not found ended its session before it
         # could be attached to, and all that was left to say was that it could
-        # not be. The pane is kept, for a failure only, and shown as it died.
+        # not be; one that finished with nobody watching was gone with what it
+        # said. The pane is kept, whatever the status, and shown as it went.
         box = iframe_box(60, 12)
         for (cmd, status, said) in (("sh -c 'echo boom; exit 3'", 3, "boom"),
-                                    ("wl-no-such-agent", 127, "not found"))
-            n = mux_name(P, "test", "fails")
+                                    ("no-such-agent", 127, "not found"),
+                                    ("echo fine", 0, "fine"))
+            n = mux_name(P, "test", "exits")
             mux_kill(n)
             @test first(mux_start(n, pwd(), cmd))
-            sleep(0.5)
+            row() = only(filter(x -> x.name == n, mux_list(P)))
+            @test timedwait(() -> row().dead, 5.0) === :ok
             @test mux_alive(n)                     # kept, though nothing runs
-            f = iframe(n, "failed")
+            # It is a state and not a bell: nothing rang, and nothing can.
+            @test !row().bell && !mux_ring!(n)
+            f = iframe(n, "exited")
             @test f !== nothing
             @test iframe_sync!(f, box) === true
             @test f.client === nothing && f.exited == status
             @test occursin(string("status ", status), f.status)
             text = join(unescaped.(f.frame), "\n")
             @test occursin(said, text) && occursin("Pane is dead", text)
-            # Nothing can be typed at it; letting go of it is ending it.
+            # Looking does not end it; letting go of it does.
+            @test row().dead
+            # Nothing can be typed at it.
             @test iframe_send!(f, UInt8['x'], box) === false
             iframe_close!(f)
             @test !mux_alive(n) && f.exited === nothing
         end
-        # A child that exits cleanly ends its session as it always did.
-        n = mux_name(P, "test", "fine")
-        mux_kill(n)
-        @test first(mux_start(n, pwd(), "sh -c 'exit 0'"))
-        sleep(0.5)
-        @test !mux_alive(n)
     end
 
     @testset "one command pipe for all of them" begin
