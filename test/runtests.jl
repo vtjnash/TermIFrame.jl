@@ -864,6 +864,18 @@ else
         iframe_close!(f)
         @test !mux_alive(n)
 
+        # Let go of inside the second before the pipe says so - the child's
+        # last words on screen and the key pressed on them - the iframe asks
+        # the server itself, and ends what has nothing running in it.
+        mux_start(n, pwd(), "sh -c 'echo last; sleep 0.3'")
+        f = iframe(n, "brief")
+        @test iframe_sync!(f, box) === true && f.exited === nothing
+        sleep(0.6)
+        @test only(filter(x -> x.name == n, mux_list(P))).dead
+        @test f.exited === nothing            # no sync since
+        iframe_close!(f)
+        @test !mux_alive(n)
+
         # A session that is ended under the iframe - killed, its server gone -
         # is the other way a child goes, and the one with no screen to keep.
         mux_start(n, pwd(), "sleep 120")

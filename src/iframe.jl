@@ -944,11 +944,24 @@ Let go of the child. The session keeps running - that is what a session is for;
 [`mux_kill`](@ref) is what ends one. Unless the child has exited and its pane
 was kept for this (`exited`): once it has been seen there is nothing left
 running, and letting go of it is ending it.
+
+Asked of the server here, not only read off the last sync: the pane is told
+of the exit by the host's command pipe, on a one-second check, and a host
+that let go inside that second - the child's last words on screen, and the
+key pressed on them - left a session with nothing running in it, kept until
+the next open found it. One round trip ([`mux_pane_state`](@ref)), on a
+client still up.
 """
 function iframe_close!(f::IFrame)
     drag_held!(f, false)
     c = f.client
-    c === nothing || mux_close(c)
+    if c !== nothing
+        if f.exited === nothing && !c.dead
+            dead = mux_pane_state(c)[8]
+            dead === nothing || (f.exited = dead)
+        end
+        mux_close(c)
+    end
     f.exited === nothing || (mux_kill(f.name); f.exited = nothing)
     nothing
 end
