@@ -223,9 +223,9 @@ function iframe_sync!(f::IFrame, box::NTuple{2,Int})
         f.client = nothing
         return true
     end
-    # As tmux gave them: a row leaves a colour open into the next, which is
-    # why the frame writer closes each one after it is written.
-    f.frame = lines
+    # Each row on its own: the frame writer closes one after writing it, and
+    # tmux wrote the next as the continuation of it (`reopened`).
+    f.frame = reopened(lines)
     f.cursor, f.wantsmouse = (cx, cy, showing), mouse
     f.history, f.alt, f.copy = hist, alt, copy
     copy === nothing || paint_selection!(f.frame, copy, hist, first(f.sized))
@@ -252,7 +252,8 @@ end
 Matches a CSI sequence or an OSC 8 hyperlink at the start of a string - what
 is in a captured row and takes no columns. `match(ESCAPE, SubString(s, i))` is
 how a walk over a row steps over one. The one reader of a child's escapes:
-nothing here turns them into anything else.
+nothing here turns them into anything else, and the one that reads inside one,
+[`reopened`](@ref), reads only what an SGR sets, to say it again.
 """
 const ESCAPE = r"^(?:\e\[[0-9;:]*[A-Za-z]|\e\][^\e]*\e\\)"
 
@@ -276,6 +277,98 @@ function unescaped(s::AbstractString)
     String(take!(io))
 end
 
+"""
+    reopened(rows) -> rows
+
+The rows of a capture, each opening with what the row before it left open.
+
+`capture-pane -e` writes an escape where a cell differs from the cell before
+it, and the cell before the first of a row is the last of the row above: a
+coloured row filled to the pane's last column, or wrapped there, leaves its
+colour open and the row under it is written with none, and so is every row
+after that until a cell differs. Drawn as it was given, each row closed after
+it, the second row of a `+` run as wide as the pane was black (2026-10-08).
+
+So what an SGR sets is kept, one entry per thing it can set - a colour, an
+attribute - and a row that starts in that state starts with it written. A
+reset empties it, `39`/`49`/`59` and `22`-`29`/`55` take their entry out, and
+the rest is kept as tmux spelt it, `4:3` and `38;2;…` included. A capture
+starts from the default cell, so the first row needs nothing.
+"""
+function reopened(rows::Vector{String})
+    st = Dict{Int,String}()
+    out = Vector{String}(undef, length(rows))
+    for (i, r) in enumerate(rows)
+        out[i] = isempty(st) ? r : string(sgr_open(st), r)
+        sgr_walk!(st, r)
+    end
+    out
+end
+
+const SGR = r"^\e\[([0-9;:]*)m"
+
+# The entry a parameter is kept under: the colours under their introducer, an
+# attribute under the number that sets it (`21`, double underline, with `4`;
+# `6`, fast blink, with `5`), and `nothing` for one that sets nothing.
+function sgr_slot(n::Int)
+    30 <= n <= 37 || 90 <= n <= 97 || n == 38 || n == 39 ? 30 :
+    40 <= n <= 47 || 100 <= n <= 107 || n == 48 || n == 49 ? 40 :
+    n == 58 || n == 59 ? 58 :
+    n in (1, 2, 3, 4, 5, 7, 8, 9, 53) ? n :
+    n == 21 ? 4 : n == 6 ? 5 : nothing
+end
+
+"`st` after the SGR sequences of `r`, read in order; other escapes are stepped over."
+function sgr_walk!(st::Dict{Int,String}, r::AbstractString)
+    i = firstindex(r)
+    while i <= lastindex(r)
+        m = match(ESCAPE, SubString(r, i))
+        if m === nothing
+            i = nextind(r, i)
+            continue
+        end
+        sm = match(SGR, m.match)
+        sm === nothing || sgr_apply!(st, sm.captures[1])
+        i += ncodeunits(m.match)
+    end
+    st
+end
+
+function sgr_apply!(st::Dict{Int,String}, params::AbstractString)
+    ps = isempty(params) ? SubString{String}["0"] : split(params, ';')
+    i = 1
+    while i <= length(ps)
+        n = tryparse(Int, first(split(ps[i], ':')))
+        if n === nothing || n == 0
+            n === nothing || empty!(st)
+            i += 1
+        elseif n in (38, 48, 58)
+            # An extended colour takes its parameters with it: `5;n`, or
+            # `2;r;g;b`. tmux writes them with `;`, and a `:` form is one
+            # parameter already.
+            kind = i < length(ps) ? ps[i + 1] : ""
+            j = kind == "5" ? i + 2 : kind == "2" ? i + 4 : i
+            j = min(j, length(ps))
+            st[sgr_slot(n)] = join(ps[i:j], ';')
+            i = j + 1
+        elseif n in (39, 49, 59)
+            delete!(st, sgr_slot(n)); i += 1
+        elseif n == 22
+            delete!(st, 1); delete!(st, 2); i += 1
+        elseif 23 <= n <= 29 || n == 55
+            delete!(st, n == 55 ? 53 : n - 20); i += 1
+        else
+            k = sgr_slot(n)
+            k === nothing || (st[k] = ps[i])
+            i += 1
+        end
+    end
+    st
+end
+
+sgr_open(st::Dict{Int,String}) =
+    string("\e[", join((st[k] for k in sort!(collect(keys(st)))), ';'), "m")
+
 """What a dead pane said, in `rows` rows: its history as well as its screen,
 since the pane was resized to the box after it died and a box shorter than it
 pushed its top lines - often the only ones with anything in them - into the
@@ -286,7 +379,7 @@ those words and not by being last: in a box narrower than it is long it
 wraps, and the blank rows are above its first row.
 """
 function dead_screen(c::MuxClient, hist::Int, rows::Int)
-    lines = mux_capture(c; scroll = hist, rows = hist + rows)
+    lines = reopened(mux_capture(c; scroll = hist, rows = hist + rows))
     blank(l) = isempty(strip(unescaped(l)))
     while !isempty(lines) && blank(lines[end])
         pop!(lines)

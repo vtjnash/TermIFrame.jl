@@ -16,7 +16,7 @@ import TermIFrame: mux, mux_cmd, mux_spawn, mux_line, bundled_tmux, standalone,
     CopyMode, copy_selected, mux_paste, mux_brackets, mux_resize, mux_keys,
     mux_close, MUX_PIPE, MUX_BELLS, MUX_TITLES, MUX_DEAD, pipe_session, mux_version,
     bordered, iframe_wheel!, page_keys!, iframe_drag!, retarget_mouse, WHEEL_ROWS, DRAG_SCROLL, PAUSE_AFTER,
-    ESCAPE, unescaped
+    ESCAPE, unescaped, reopened
 
 import TermInput
 import TermInput: Row, faced, verbatim, rowwidth, frame_bytes
@@ -258,6 +258,41 @@ end
     @test !any(r -> occursin("\e[2m", ansi(r)), rs)
 end
 
+@testset "a captured row stands on its own" begin
+    # What `capture-pane -e` wrote for a `+` run: the escapes are a diff
+    # against the cell before, and the cell before a row's first is the last
+    # of the row above. A full-width green row and a wrapped one leave the
+    # row under them with no opener; reopened, each row says its own colour,
+    # a row that started in the default cell is left as it was, and a row
+    # after a `39` or a reset gets nothing.
+    full = "\e[32m+" * "x"^39
+    rows = ["\e[32m+aaa\e[39m", full, "+bbb\e[39m", "\e[32m+" * "y"^39,
+            "y"^16 * "\e[39m", "\e[32m+ccc\e[39m", " ctx", ""]
+    @test reopened(rows) == ["\e[32m+aaa\e[39m", full, "\e[32m+bbb\e[39m",
+                             "\e[32m+" * "y"^39, "\e[32m" * "y"^16 * "\e[39m",
+                             "\e[32m+ccc\e[39m", " ctx", ""]
+    @test unescaped.(reopened(rows)) == unescaped.(rows)
+    # One entry per thing set: bold and a colour reopen as one sequence, an
+    # attribute taken off by its `2x` goes, a reset empties - after the row
+    # that starts with it has been opened, since what is open is open until
+    # it - and the colours are kept as tmux spelt them, `4:3`, `38;2;r;g;b`,
+    # `58;5;n` included.
+    @test reopened(["\e[1m\e[32mab", "cd", "\e[0mef", "gh"]) ==
+          ["\e[1m\e[32mab", "\e[1;32mcd", "\e[1;32m\e[0mef", "gh"]
+    @test reopened(["\e[38;2;1;2;3m\e[48;5;7m\e[1;3mfull", "next\e[22m",
+                    "then\e[23;49m", "\e[4:3m\e[58;5;1mlast", "end"]) ==
+          ["\e[38;2;1;2;3m\e[48;5;7m\e[1;3mfull",
+           "\e[1;3;38;2;1;2;3;48;5;7mnext\e[22m",
+           "\e[3;38;2;1;2;3;48;5;7mthen\e[23;49m",
+           "\e[38;2;1;2;3m\e[4:3m\e[58;5;1mlast",
+           "\e[4:3;38;2;1;2;3;58;5;1mend"]
+    # A hyperlink is stepped over, not reopened: tmux closes one at the row's
+    # end itself.
+    link = "\e[32m\e]8;;http://a\e\\x" * "x"^39 * "\e]8;;\e\\"
+    @test reopened([link, "more"]) == [link, "\e[32mmore"]
+    @test reopened(String[]) == String[]
+end
+
 @testset "the box the child is given" begin
     # Two rows of border plus the footer, and four columns of border and padding.
     @test iframe_box(80, 24) == (76, 21)
@@ -378,6 +413,24 @@ else
         @test row().bell === false
         iframe_close!(f2)
         @test mux_kill(n) && mux_alive(n) === false
+    end
+
+    @testset "a row under a full-width coloured row keeps its colour" begin
+        n = mux_name(P, "test", "fullrow")
+        mux_kill(n)
+        cols, rows = iframe_box(44, 10)
+        full = "+" * "x"^(cols - 1)
+        @test first(mux_start(n, pwd(), string("sh -c 'printf \"\\033[32m", full,
+            "\\033[m\\n\\033[32m+second\\033[m\\n\"; sleep 120'")))
+        f = iframe(n, "demo")
+        @test f !== nothing
+        @test iframe_sync!(f, (cols, rows)) === true
+        @test unescaped(f.frame[1]) == full && unescaped(f.frame[2]) == "+second"
+        # tmux wrote the second row as the first's continuation, with no
+        # opener of its own; drawn closed after the first, it was black.
+        @test startswith(f.frame[2], "\e[32m")
+        iframe_close!(f)
+        mux_kill(n)
     end
 
     @testset "the key after the prefix is the host's" begin

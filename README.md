@@ -110,15 +110,20 @@ row of it is a `verbatim` piece of the box's row: written as it is, as wide as
 the pane it was read from, and never measured, cut or restyled after the one
 thing done to it here, copy mode's selection painted in. tmux sized the pane to
 the box, so each row fits; `frame_bytes` closes a piece after writing it and
-moves the cursor past its width, however little of it tmux filled.
+moves the cursor past its width, however little of it tmux filled. Closing it
+is why each row is made to stand on its own first (`reopened`): tmux writes a
+capture as one stream, an escape only where a cell differs from the one before,
+and a row under a coloured row filled to the last column, or wrapped there, is
+written with no colour of its own.
 
 Both halves come through [`TermInput.jl`](https://github.com/vtjnash/TermInput.jl),
 which is this package's only dependency besides `tmux_jll`: a text field needs
 exactly the same measuring for exactly the same reason, and the dependency goes
 that way round because a text field must not pull a tmux binary in to measure a
 string. What reads a child's escapes is here and not there, and only reads
-them: `ESCAPE` steps over one, and `unescaped(row)` is a captured row's text,
-for counting characters in it.
+them: `ESCAPE` steps over one, `unescaped(row)` is a captured row's text, for
+counting characters in it, and `reopened` reads what an SGR sets, to say it
+again at the next row.
 
 ## Sessions
 
