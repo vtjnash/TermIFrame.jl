@@ -34,13 +34,18 @@ from state it reads:
   * **redraw** when the client says something: [`mux_wait`](@ref) on `client`,
     which answers once more as the session ends.
   * **the child exited**: the server keeps its pane to be read
-    ([`mux_start`](@ref)), and the sync that finds it leaves `client`
-    `nothing`, the screen it left in `frame`, its status in `exited` and the
-    words for that in `status`; [`iframe_close!`](@ref) is what lets the
-    session go. A session that *ended* - killed, or its server gone - is the
-    same to the host with `exited` `nothing`. Whatever the host does about
-    either - an editor's file read back - is done once, by the host, which is
-    the one that knows what once means.
+    ([`mux_start`](@ref)), and the sync that finds it puts its status in
+    `exited` and the words for that in `status`, once. The client is kept:
+    the screen and its history are still tmux's to show, so the wheel, the
+    page keys and a drag go on working as they do over a shell, and the
+    frame is read back after each as before. Nothing can be typed at it -
+    tmux drops keys to a dead pane unread, and [`iframe_input!`](@ref) hands
+    one back as `:gone` instead - and [`iframe_close!`](@ref) is what lets
+    the session go. A session that *ended* - killed, or its server gone -
+    leaves `client` `nothing` with `exited` `nothing`. Whatever the host
+    does about either - an editor's file read back - is done once, by the
+    host, which is the one that knows what once means: `exited` going from
+    `nothing` is that moment.
   * **a key after the prefix**: [`iframe_input!`](@ref) answers it, and the
     host does what it means with the tools here - leaving, killing, going full
     screen with its own way of handing the terminal over ([`mux_attach`](@ref)).
@@ -116,8 +121,8 @@ writes its frames to. What the child writes that a frame cannot carry, the
 clipboard, is relayed there ([`iframe_sync!`](@ref)).
 
 A child that exits leaves its pane ([`mux_start`](@ref)), so the session does
-not end and the client hears no `%exit`; tmux writes its `Pane is dead` line on
-the screen itself, which is no `%output` either. The child's last output is a
+not end and the client hears no `%exit`; and nothing is written on the screen
+for it, so there is no `%output` either. The child's last output is a
 wake, but one a sync answers before the exit behind it has landed (measured on
 3.7c: never seen, three of three). The command pipe is what is told
 ([`MUX_DEAD`](@ref)), and a host that hears it there syncs its iframes; with
@@ -203,17 +208,18 @@ function iframe_sync!(f::IFrame, box::NTuple{2,Int})
     lines = mux_capture(c; scroll = copy === nothing ? f.scroll : copy.scroll,
                         rows = last(f.sized))
     if dead !== nothing && !c.dead
-        # The child exited and the server kept its pane: the screen as it
-        # went, tmux's `Pane is dead` line at its foot, is what is kept here,
-        # and the client is let go - nothing can be typed at a dead pane. The
-        # session stays until the iframe lets go of it.
-        f.frame = dead_screen(c, hist, last(f.sized))
-        f.cursor, f.copy, f.scroll = (0, 0, false), nothing, 0
-        f.exited = dead
-        f.status = string("exited with status ", dead)
-        mux_close(c)
-        f.client = nothing
-        return true
+        # The child exited and the server kept its pane: said once, as it is
+        # found, and the client kept with it - the screen and its history
+        # are still there to be scrolled and copied from, and tmux's copy
+        # mode works on a dead pane as on a live one. Nothing can be typed
+        # at it (`iframe_input!`), and nothing the child had asked for
+        # stands: the mouse it wanted has nowhere to go, so the reports are
+        # ours. The session stays until the iframe lets go of it.
+        if f.exited === nothing
+            f.exited = dead
+            f.status = string("exited with status ", dead)
+        end
+        mouse = false
     end
     if c.dead
         # With the reason: a client that timed out on a reply is not a session
@@ -368,33 +374,6 @@ end
 
 sgr_open(st::Dict{Int,String}) =
     string("\e[", join((st[k] for k in sort!(collect(keys(st)))), ';'), "m")
-
-"""What a dead pane said, in `rows` rows: its history as well as its screen,
-since the pane was resized to the box after it died and a box shorter than it
-pushed its top lines - often the only ones with anything in them - into the
-history. tmux writes `Pane is dead` on the bottom row, below however many
-blank ones the screen had left; those are its padding and not the child's, so
-they go, and the last `rows` lines are what is left. Its line is found by
-those words and not by being last: in a box narrower than it is long it
-wraps, and the blank rows are above its first row.
-"""
-function dead_screen(c::MuxClient, hist::Int, rows::Int)
-    lines = reopened(mux_capture(c; scroll = hist, rows = hist + rows))
-    blank(l) = isempty(strip(unescaped(l)))
-    while !isempty(lines) && blank(lines[end])
-        pop!(lines)
-    end
-    k = something(findlast(l -> startswith(unescaped(l), "Pane is dead"), lines),
-                  length(lines))
-    if k >= 1
-        i = k - 1
-        while i >= 1 && blank(lines[i])
-            i -= 1
-        end
-        lines = vcat(lines[1:i], lines[k:end])
-    end
-    length(lines) > rows ? lines[end-rows+1:end] : lines
-end
 
 """
     paint_selection!(rows, m, history, cols) -> rows
@@ -923,6 +902,7 @@ function iframe_input!(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
         bytes = vcat(f.held, bytes)
         empty!(f.held)
     end
+    f.exited === nothing || return exited_input!(f, bytes, origin, box)
     i = 1
     while i <= length(bytes)
         if f.pasting
@@ -972,6 +952,40 @@ function iframe_input!(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
     :ok
 end
 
+"""Bytes typed at a pane whose child has exited.
+
+The screen is still tmux's, so the wheel and a drag over it, and the page
+keys, are answered as over a shell: the history is there and so is copy
+mode. Nothing else can go anywhere - tmux drops a key to a dead pane unread,
+and a paste with it - so what is left after those is the host's: the key
+after a prefix comes back as it does from a live pane, and a bare key is
+`:gone`, as the host hears it from a pane with no client at all, back on the
+live screen first, as a key to a live pane would have been (`live!`). One
+list for the keys after the prefix and the keys themselves, which is the
+host's to keep.
+"""
+function exited_input!(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
+                       box::NTuple{2,Int})
+    was = f.scroll
+    bytes = retarget_mouse(f, bytes, origin, box)
+    (bytes, paged) = page_keys!(f, bytes)
+    (paged || f.scroll != was) && iframe_sync!(f, box)
+    isempty(bytes) && return :ok
+    if f.pending
+        f.pending = false
+        f.held = bytes[2:end]
+        return bytes[1]
+    end
+    j = findfirst(==(IFRAME_PREFIX), bytes)
+    if j !== nothing
+        j == length(bytes) && (f.pending = true; return :ok)
+        f.held = bytes[j+2:end]
+        return bytes[j+1]
+    end
+    live!(f, box)
+    :gone
+end
+
 """What was typed, as opposed to pasted, up to a prefix: answers where in
 `bytes` the key after the prefix is, or 0 when there is none - everything went
 to the child, or the prefix ended the read and its key is still to come."""
@@ -1008,12 +1022,15 @@ end
 
 Send `bytes` to the child as keys, back on the live screen first. What a host
 sends for `^]]`: the prefix itself, which [`iframe_input!`](@ref) never does.
+`false` with nothing sent where there is no child to send to - the session
+ended, or its child exited and the pane is kept (`exited`): tmux would drop
+the keys unread, and the caller is better told.
 """
 function iframe_send!(f::IFrame, bytes::AbstractVector{UInt8}, box::NTuple{2,Int})
     isempty(bytes) && return true
     live!(f, box)
     c = f.client
-    c === nothing && return false
+    (c === nothing || f.exited !== nothing) && return false
     mux_keys(c, bytes)
 end
 

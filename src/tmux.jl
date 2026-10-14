@@ -261,6 +261,18 @@ on `cat`, which waits, and `respawn-pane -k` puts `cmd` in its place - down
 the pipe each command is its own round trip, and a command that fails at exec
 is gone inside one.
 
+And the screen is left as the child left it: `remain-on-exit-format` is
+emptied, so tmux writes no `Pane is dead` line. With the line, tmux scrolls
+the screen a row to write it on the bottom one and leaves the cursor there,
+and a resize to a box shorter than the pane pushes the top rows - the
+child's only words, usually - into the history behind the blank rows it had
+not used (measured, 3.7c: `echo only` in 24 rows resized to 8 showed seven
+blanks over the line, `only` in the history). With no line the cursor stays
+under the child's last word and the shrink eats the blank rows below it
+first, so the screen is the child's, the history is the history, and a
+window scrolled back into it reads as one. The status is `pane_dead_status`,
+which the host says in its own words ([`mux_pane_state`](@ref)).
+
 `pipe` is the prefix whose command pipe ([`mux_pipe_open`](@ref)) is opened
 while the session is still `cat`, so that the terminal's background
 ([`mux_bg!`](@ref)) is on the pane before the child can ask for it - nvim asks
@@ -273,6 +285,7 @@ function mux_start(name::AbstractString, dir::AbstractString, cmd::AbstractStrin
     ok || return (false, isempty(out) ? "could not start session" : out)
     t = string("=", name, ":")
     mux("set-option", "-w", "-t", t, "remain-on-exit", "on")
+    mux("set-option", "-w", "-t", t, "remain-on-exit-format", "")
     isempty(pipe) || mux_pipe_open(pipe)
     mux_seed(strip(out))
     # One trailing argument, so tmux hands the whole thing to a shell. Passing

@@ -896,26 +896,30 @@ else
         @test timedwait(() -> id in split(get(pipe.subs, MUX_DEAD, "")), 5.0) === :ok
         @test !c.dead
         @test iframe_sync!(f, box) === true
-        @test f.client === nothing && f.exited == 0
+        # The client is kept: the pane is still there to be scrolled and
+        # copied from, and the host hears of the end from `exited`.
+        @test f.client === c && f.exited == 0
         @test occursin("exited with status 0", f.status)
         @test any(l -> occursin("last", l), unescaped.(f.frame))
-        @test timedwait(() -> istaskdone(t), 2.0) === :ok && woke[] >= 1
         # The session is there, with nothing running in it, until the iframe
         # lets go.
         @test only(filter(x -> x.name == n, mux_list(P))).dead
-        # And a dead client answers at once, not never.
-        @test mux_wait(c) === false
-        # A later sync has nothing to find: what the host does about the end is
-        # done once, by the host, from the first one.
-        @test iframe_sync!(f, box) === false
-        # What to do about it is the host's to say, and so are its keys.
+        # A later sync reads the same screen and says nothing new: what the
+        # host does about the end is done once, by the host, from the first.
         f.status = ""
+        @test iframe_sync!(f, box) === true
+        @test f.exited == 0 && f.status == ""
+        # What to do about it is the host's to say, and so are its keys.
         @test iframe_note(f) === nothing
-        # And the box still draws with no child behind it.
+        # And the box still draws.
         out = iframe_rows(f, 40, 10)
         @test length(out) == 10 && all(rowwidth(r) == 40 for r in out)
         iframe_close!(f)
         @test !mux_alive(n)
+        # Letting go is what ends the client's wait, and a closed one answers
+        # at once, not never.
+        @test timedwait(() -> istaskdone(t), 2.0) === :ok && woke[] >= 1
+        @test mux_wait(c) === false
 
         # Let go of inside the second before the pipe says so - the child's
         # last words on screen and the key pressed on them - the iframe asks
@@ -989,17 +993,94 @@ else
             f = iframe(n, "exited")
             @test f !== nothing
             @test iframe_sync!(f, box) === true
-            @test f.client === nothing && f.exited == status
+            @test f.client !== nothing && f.exited == status
             @test occursin(string("status ", status), f.status)
-            text = join(unescaped.(f.frame), "\n")
-            @test occursin(said, text) && occursin("Pane is dead", text)
+            # The screen as the child left it, its words on the first row:
+            # tmux writes no `Pane is dead` line (`mux_start`), so the resize
+            # to the box ate the blank rows under the cursor rather than
+            # pushing the words into the history over a line and its padding.
+            rows = unescaped.(f.frame)
+            @test occursin(said, rows[1])
+            @test !any(r -> occursin("Pane is dead", r), rows)
+            @test f.history == 0 && f.scroll == 0
             # Looking does not end it; letting go of it does.
             @test row().dead
-            # Nothing can be typed at it.
+            # Nothing can be typed at it, and the cursor is gone with the child.
             @test iframe_send!(f, UInt8['x'], box) === false
+            @test iframe_cursor(f, iframe_origin(1, 1), box) === nothing
             iframe_close!(f)
             @test !mux_alive(n) && f.exited === nothing
         end
+    end
+
+    @testset "an exited pane scrolls back and copies" begin
+        # The screen and its history are tmux's as long as the pane stands,
+        # and copy mode works on a dead pane as on a live one: the wheel, the
+        # page keys and a drag are answered as over a shell. What is typed has
+        # nowhere to go, and is the host's.
+        n = mux_name(P, "test", "deadcopy")
+        mux_kill(n)
+        mux_start(n, pwd(), "sh -c 'seq 1 500; seq -s x 1 30; echo tail; exit 3'")
+        term = IOBuffer()
+        f = iframe(n, "sh"; out = term)
+        box, origin = (40, 10), iframe_origin(1, 1)
+        for _ in 1:40
+            iframe_sync!(f, box)
+            f.exited !== nothing && break
+            sleep(0.25)
+        end
+        @test f.exited == 3 && f.client !== nothing
+        c = f.client
+        @test first(mux_ask(c, string("set -w -t =", n, ": mode-keys emacs")))
+        @test f.wantsmouse === false
+        # The view: rows 0-5 are 495-500, 6 and 7 the wrapped line, 8 `tail`,
+        # 9 the row the cursor was on - as the live pane's, whose shell sat on
+        # the same row.
+        rows, hist = unescaped.(f.frame), f.history
+        @test rows[1] == "495" && rows[9] == "tail" && hist > 100
+        sgr(b, x, y, fin = 'M') = collect(codeunits(string("\e[<", b, ";",
+            origin[1] + x, ";", origin[2] + y, fin)))
+        caught(g) = (take!(term); g(); String(take!(term)))
+
+        # The wheel scrolls back, and the frame is read back scrolled.
+        @test iframe_input!(f, sgr(64, 5, 5), origin, box) === :ok
+        @test f.scroll == WHEEL_ROWS
+        @test unescaped(f.frame[1]) == string(495 - WHEEL_ROWS)
+        @test occursin("rows back", iframe_note(f))
+        # The page keys too.
+        @test iframe_input!(f, collect(codeunits("\e[5;2~")), origin, box) === :ok
+        @test f.scroll == WHEEL_ROWS + 9
+        # A typed key is the host's, and brings the view back first - as a key
+        # to a live pane would have.
+        @test iframe_input!(f, UInt8['q'], origin, box) === :gone
+        @test f.scroll == 0 && unescaped(f.frame[1]) == "495"
+        # The key after a prefix comes back as from a live pane, across reads
+        # too, and nothing is left held after it.
+        @test iframe_input!(f, UInt8[TermIFrame.IFRAME_PREFIX, 'd'], origin, box) === UInt8('d')
+        @test iframe_input!(f, UInt8[], origin, box) === :ok
+        @test iframe_input!(f, UInt8[TermIFrame.IFRAME_PREFIX], origin, box) === :ok
+        @test iframe_input!(f, UInt8['K'], origin, box) === UInt8('K')
+        # Nothing is sent: tmux would drop it unread, and the caller is told.
+        @test iframe_send!(f, UInt8['x'], box) === false
+
+        # A drag is copy mode, as over a shell, and the button coming up puts
+        # the selection on the clipboard: `500` from its `0`, the wrapped
+        # line's first row whole, its second up to column 4.
+        iframe_input!(f, sgr(0, 2, 5), origin, box)
+        iframe_input!(f, sgr(32, 4, 7), origin, box)
+        @test f.copy !== nothing && f.dragging
+        @test f.copy.sel == (2, hist + 5, 4, hist + 7)
+        @test iframe_cursor(f, origin, box) == (origin[2] + 7, origin[1] + 4)
+        out = caught(() -> iframe_input!(f, sgr(0, 4, 7, 'm'), origin, box))
+        want = "0\n" * rows[7] * "7x18"
+        @test occursin(string("\e]52;c;", TermIFrame.base64encode(want), "\a"), out)
+        @test join(last(mux_ask(c, "show-buffer")), "\n") == want
+        @test first(mux_ask(c, "delete-buffer"))
+        @test f.copy === nothing && !f.dragging && f.scroll == 0
+        @test f.exited == 3                          # none of it was the end
+        @test only(filter(x -> x.name == n, mux_list(P))).dead
+        iframe_close!(f)
+        @test !mux_alive(n)
     end
 
     @testset "one command pipe for all of them" begin
