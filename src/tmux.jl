@@ -565,7 +565,8 @@ end
 """
     mux_attach(name; suspend) -> Bool
 
-Show `name` full screen, however the host is being run.
+Show `name` full screen, however the host is being run, and come back when
+the child exits.
 
 Two different things, because attaching depends on where we already are.
 
@@ -580,16 +581,39 @@ the same server. What is wanted is the client we are already running under
 pointed at the other session, which is `switch-client`, and it returns at once
 rather than blocking until the user is finished - tmux's own binding brings them
 back, and the host is left running in the session it was always in.
+
+The child exiting brings them back too, which [`mux_start`](@ref)'s
+`remain-on-exit` had taken away: the session used to end with its child and
+take the client with it, and now the pane stands, with the client on it, and a
+key on a dead pane is dropped unread - the one way out was tmux's own detach
+key. So a `pane-died` hook on the session ([`mux_return_hook!`](@ref)) does
+what the ending used to: it detaches the client that came from outside, so
+`attach` returns and the host is back where it was; it switches the one that
+came from inside back to the session it left, `switch-client -l`. The
+host's own view of the pane says the child exited and keeps the screen to be
+read; full screen was for watching it run.
+
+A pane already dead when this is called shows its screen as before, and the
+hook has nothing to fire on: leaving it is tmux's detach, as it always was.
 """
 function mux_attach(name::AbstractString; suspend = f -> f())
     cmd = mux_cmd("attach", string("-t=", name))
     cmd === nothing && return false
     if !isempty(get(ENV, "TMUX", ""))
-        # Spawned, never down the pipe: it moves the client that asked.
+        # Spawned, never down the pipe: both are about the client that asked,
+        # which a `display` with no target names as `switch-client` moves it.
+        ok, tty = mux_spawn("display", "-p", "#{client_tty}")
+        tty = ok ? strip(tty) : ""
+        mux_return_hook!(name, tty, "switch-client -l -c " * tty)
+        # The hook stays: it is about this client being on that session, and
+        # the next time it is - back by hand, or by this - the same answer
+        # holds. It goes with the session.
         first(mux_spawn("switch-client", "-t=" * name)) && return true
         # A session on another server cannot be switched to; fall through and
         # try to attach, which will at least say why.
     end
+    tty = host_tty()
+    set = mux_return_hook!(name, tty, "detach-client -t " * tty)
     suspend() do
         try
             run(cmd)
@@ -598,5 +622,44 @@ function mux_attach(name::AbstractString; suspend = f -> f())
             # Neither is worth a backtrace over the restored screen.
         end
     end
+    # Off again: it named this terminal, and the next attach may be from
+    # another one - or a hand's, which is not ours to detach.
+    set && mux_return_hook!(name, "", "")
     true
+end
+
+"""
+    host_tty() -> String
+
+The terminal this process is on, as tmux names a client by it - `ttyname` of
+stdin, which is the one `attach` opens - or `""` when stdin is not a terminal,
+and `attach` would have nowhere to draw either.
+"""
+function host_tty()
+    p = ccall(:ttyname, Cstring, (Cint,), 0)
+    p == C_NULL ? "" : unsafe_string(p)
+end
+
+"""
+    mux_return_hook!(name, tty, cmd) -> Bool
+
+Run `cmd` for the client on `tty` when `name`'s child exits - a `pane-died`
+hook on the session, which is when tmux fires for a pane that `remain-on-exit`
+keeps - or, with `tty` empty, take the hook off.
+
+Guarded on that client being attached to the session at the time
+(`session_attached_list`): a hook that outlived the visit would otherwise act
+on a client that had gone elsewhere, when a child it was no longer watching
+exited. The hook has no client of its own to ask about - tmux runs it with the
+pane, window and session that died and nothing else - so the client is named by
+its tty, which is how tmux names one.
+
+One hook, replaced rather than added to: `set-hook` without `-a` writes the
+array's first entry, and nothing else of this package hooks a session.
+"""
+function mux_return_hook!(name::AbstractString, tty::AbstractString, cmd::AbstractString)
+    t = string("=", name, ":")
+    isempty(tty) && return first(mux("set-hook", "-u", "-t", t, "pane-died"))
+    first(mux("set-hook", "-t", t, "pane-died",
+              string("if -F '#{m:*", tty, "*,#{session_attached_list}}' '", cmd, "'")))
 end

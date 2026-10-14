@@ -177,7 +177,11 @@ or is heard, or when a session starts or ends (`sessions` on the client), so a
 host hears a bell without listing the sessions on a clock. A child exiting is
 heard there as well (`MUX_DEAD` in the client's `subs`), which is how a host
 drawing that pane learns of it - nothing ended, so the pane's own client is
-told nothing - and syncs its iframe. `switch-client` and
+told nothing - and syncs its iframe. A client `mux_attach` put on the
+session full screen is handed back by it when the child exits - a `pane-died`
+hook detaches the one that came from outside and switches the one that came
+from inside back to where it was - since the pane standing means the session
+no longer ends under them. `switch-client` and
 the attach behind `mux_seen!` are always spawned: they are about the client
 that asks.
 

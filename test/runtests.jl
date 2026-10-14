@@ -16,7 +16,7 @@ import TermIFrame: mux, mux_cmd, mux_spawn, mux_line, bundled_tmux, standalone,
     CopyMode, copy_selected, mux_paste, mux_brackets, mux_resize, mux_keys,
     mux_close, MUX_PIPE, MUX_BELLS, MUX_TITLES, MUX_DEAD, pipe_session, mux_version,
     bordered, iframe_wheel!, page_keys!, iframe_drag!, retarget_mouse, WHEEL_ROWS, DRAG_SCROLL, PAUSE_AFTER,
-    ESCAPE, unescaped, reopened
+    ESCAPE, unescaped, reopened, mux_return_hook!, host_tty
 
 import TermInput
 import TermInput: Row, faced, verbatim, rowwidth, frame_bytes
@@ -413,6 +413,56 @@ else
         @test row().bell === false
         iframe_close!(f2)
         @test mux_kill(n) && mux_alive(n) === false
+    end
+
+    @testset "a client on an exited pane is handed back" begin
+        # `remain-on-exit` keeps the pane when the child exits, and with it
+        # whoever is attached full screen, who used to be returned by the
+        # session ending under them. The hook `mux_attach` sets is what
+        # returns them now; it is driven here without `mux_attach`, which
+        # needs a terminal of its own to give away.
+        x = mux_name(P, "test", "exits"); o = mux_name(P, "test", "outer")
+        mux_kill(x); mux_kill(o)
+        @test first(mux_start(x, pwd(), "sleep 120"))
+        # A client with a terminal, which a test has none of: a pane in a
+        # second session, attaching to the first. Its tty is the client's.
+        @test first(mux_start(o, pwd(), string("env -u TMUX ", mux_bin(), " attach -t=", x)))
+        ask(n, f) = strip(last(mux("display", "-p", "-t", string("=", n, ":"), f)))
+        clients(n) = ask(n, "#{session_attached_list}")
+        dead(n) = ask(n, "#{pane_dead}") == "1"
+        until(f) = (for _ in 1:50; f() && break; sleep(0.1); end; f())
+        tty = ask(o, "#{pane_tty}")
+        @test startswith(tty, "/dev/") && until(() -> clients(x) == tty)
+        exit!() = first(mux("respawn-pane", "-k", "-t", string("=", x, ":"), "sh -c 'exit 3'"))
+        again!() = (mux("respawn-pane", "-k", "-t", string("=", x, ":"), "sleep 120");
+                    until(() -> !dead(x) && clients(x) == tty))
+        # Without the hook, the child exiting leaves the client where it is:
+        # the pane is dead, the session stands, and the attach has not returned.
+        @test exit!() && until(() -> dead(x))
+        sleep(0.3)
+        @test clients(x) == tty && !dead(o)
+        # A hook for some other terminal does nothing to this one, which is
+        # the guard: a hook left behind must not act on a client that went
+        # elsewhere, and this client is not the one it names.
+        @test again!()
+        @test mux_return_hook!(x, "/dev/pts/none", "detach-client -t " * tty)
+        @test exit!() && until(() -> dead(x))
+        sleep(0.3)
+        @test clients(x) == tty && !dead(o)
+        # The hook for this one detaches it, so its attach returns - the pane
+        # it ran in is dead - and nobody is left on the session.
+        @test again!()
+        @test mux_return_hook!(x, tty, "detach-client -t " * tty)
+        @test exit!() && until(() -> dead(o))
+        @test isempty(clients(x))
+        # And off again, by the same call.
+        @test mux_return_hook!(x, "", "")
+        @test isempty(strip(last(mux("show-hooks", "-t", string("=", x, ":")))))
+        # What `mux_attach` would name outside tmux: a terminal, or nothing
+        # when there is none - as here, or not, depending on how this runs.
+        @test host_tty() isa String
+        mux_kill(x); mux_kill(o)
+        @test mux_alive(x) === false && mux_alive(o) === false
     end
 
     @testset "a row under a full-width coloured row keeps its colour" begin
