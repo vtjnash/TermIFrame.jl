@@ -944,3 +944,17 @@ function mux_pipe_close()
     mux_spawn("kill-session", "-t=" * c.name)
     nothing
 end
+
+# The ends of the command pipe are a `Process`'s, typed `IO`, and under them
+# run `PipeEndpoint`s: what is written down one and what the reader reads up
+# the other dispatch at run time, so the first command a client ever sent
+# compiled its own `write` - a tenth of a second, standing between a pane and
+# its first screen. Named here, so the package image holds them. `precompile`
+# answers `false` where a signature matches nothing, and that is no error:
+# a `Process` whose ends are something else is still served, only later.
+for (f, sig) in ((Base.write, (Base.PipeEndpoint, String, Char)),
+                 (Base.write, (Base.PipeEndpoint, String, String, String)),
+                 (Base.flush, (Base.PipeEndpoint,)),
+                 (Base.iterate, (Base.EachLine{Base.PipeEndpoint},)))
+    precompile(f, sig)
+end
