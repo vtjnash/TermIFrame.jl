@@ -509,10 +509,22 @@ else
         @test iframe_input!(f, vcat([IFRAME_PREFIX], b("qxy")), (3, 2), box) === UInt8('q')
         iframe_discard!(f)
         @test iframe_input!(f, UInt8[], (3, 2), box) === :ok && isempty(f.held)
+        # A mouse report a read cut through waits for its end and is moved
+        # once, whole: each half alone is no report, and both went on
+        # unmoved - a press in the screen's coordinates, rows below and
+        # columns right of the pointer, and a copy that started or ended
+        # wherever that put it.
+        f.wantsmouse = true
+        @test iframe_input!(f, b("g\e[<0;1"), (3, 2), box) === :ok && f.held == b("\e[<0;1")
+        @test iframe_input!(f, b("3;12Mh"), (3, 2), box) === :ok && isempty(f.held)
+        # A bare escape, or the head of an arrow, ending a read is a key, and
+        # goes on as it is.
+        @test iframe_input!(f, b("\e["), (3, 2), box) === :ok && isempty(f.held)
+        f.wantsmouse = false
         # The prefix itself reaches the child only when the host sends it.
         @test iframe_send!(f, [IFRAME_PREFIX], box)
         sleep(0.5)
-        @test read(out, String) == string("abcdef", Char(IFRAME_PREFIX))
+        @test read(out, String) == string("abcdefg\e[<0;11;11Mh\e[", Char(IFRAME_PREFIX))
         # With the child gone, a key is spent saying so, and then there is none.
         iframe_close!(f)
         mux_kill(n)

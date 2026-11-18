@@ -844,6 +844,22 @@ function cut_marker(bytes::AbstractVector{UInt8}, marker::AbstractVector{UInt8},
     0
 end
 
+"""How many bytes at the end of `bytes` are an SGR mouse report a read cut
+through: `ESC [ <` and the numbers after it, with no `M` or `m` yet. From
+`ESC [ <` only - a bare `ESC` or `ESC [` at the end of a read is a key, the
+escape key or the head of an arrow, and holding it would hold the key. The
+letters of `NaN` count as numbers, since xterm.js sends them in a report."""
+function cut_report(bytes::AbstractVector{UInt8})
+    n = length(bytes)
+    i = n
+    while i >= 1 && (UInt8('0') <= bytes[i] <= UInt8('9') || bytes[i] in b";Na")
+        i -= 1
+    end
+    i >= 3 && bytes[i] == UInt8('<') && bytes[i-1] == UInt8('[') && bytes[i-2] == 0x1b ||
+        return 0
+    n - i + 3
+end
+
 """Typing snaps back to the live screen, the way every terminal does - what
 you type is going to the bottom of it, so that is where you want to be
 looking."""
@@ -932,6 +948,11 @@ function iframe_input!(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
             # escape at the end of a read is the escape key, and holding it
             # would hold the key.
             k = j === nothing ? cut_marker(view(bytes, i:stop), PASTE_START, 3) : 0
+            # And a mouse report a read cut through: each half alone is no
+            # report, so neither would be moved, and the child was handed a
+            # press or a release in the screen's coordinates - rows below and
+            # columns right of where the pointer was.
+            k == 0 && j === nothing && (k = cut_report(view(bytes, i:stop)))
             k > 0 && append!(f.held, view(bytes, stop-k+1:stop))
             seg = bytes[i:stop-k]
             p = typed_input!(f, seg, origin, box)
@@ -967,19 +988,23 @@ host's to keep.
 function exited_input!(f::IFrame, bytes::Vector{UInt8}, origin::NTuple{2,Int},
                        box::NTuple{2,Int})
     was = f.scroll
-    bytes = retarget_mouse(f, bytes, origin, box)
+    # A report a read cut through waits for its end, as over a live child.
+    k = cut_report(bytes)
+    tail = bytes[end-k+1:end]
+    bytes = retarget_mouse(f, bytes[1:end-k], origin, box)
     (bytes, paged) = page_keys!(f, bytes)
     (paged || f.scroll != was) && iframe_sync!(f, box)
+    f.held = tail
     isempty(bytes) && return :ok
     if f.pending
         f.pending = false
-        f.held = bytes[2:end]
+        f.held = vcat(bytes[2:end], tail)
         return bytes[1]
     end
     j = findfirst(==(IFRAME_PREFIX), bytes)
     if j !== nothing
         j == length(bytes) && (f.pending = true; return :ok)
-        f.held = bytes[j+2:end]
+        f.held = vcat(bytes[j+2:end], tail)
         return bytes[j+1]
     end
     live!(f, box)
