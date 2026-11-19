@@ -592,11 +592,20 @@ else
         @test parse(Int, unescaped(first(f.frame))) == parse(Int, live) - page
         iframe_input!(f, collect(codeunits("\e[5;2~\e[6;2~\e[6;5~")), origin, box)
         @test f.scroll == 0 && unescaped(first(f.frame)) == live
+        # Any modifier, Alt's and Meta's as much as Shift's.
+        iframe_input!(f, collect(codeunits("\e[5;3~\e[5;10~")), origin, box)
+        @test f.scroll == 2page
+        iframe_input!(f, collect(codeunits("\e[6;16~\e[6;3~")), origin, box)
+        @test f.scroll == 0
         # A child on the alternate screen may bind them, and has them.
         f.alt = true
         @test page_keys!(f, collect(codeunits("\e[5;5~"))) ==
               (collect(codeunits("\e[5;5~")), false)
         f.alt = false
+        # And an unmodified one, and what is not a modifier, are the child's.
+        for s in ("\e[5~", "\e[5;1~", "\e[5;17~", "\e[5;3", "\e[7;3~")
+            @test page_keys!(f, collect(codeunits(s))) == (collect(codeunits(s)), false)
+        end
 
         # It stops at the top of the history rather than running past it.
         for _ in 1:(f.history ÷ WHEEL_ROWS + 20)

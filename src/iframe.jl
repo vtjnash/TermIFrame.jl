@@ -569,9 +569,11 @@ end
 """
     page_keys!(f, bytes) -> (bytes, Bool)
 
-Take the shifted and controlled page keys (`\\e[5;2~`, `\\e[6;5~` and the like)
-out of `bytes` and answer them here, a page of the pane's history at a time,
-as the wheel is answered - and say whether the view moved.
+Take the page keys held with any modifier (`\\e[5;2~`, `\\e[6;5~`, Alt's
+`\\e[5;3~` and the like) out of `bytes` and answer them here, a page of the
+pane's history at a time, as the wheel is answered - and say whether the view
+moved. Any, and not only Shift and Ctrl: the shell prints the tail of every one
+of them alike.
 
 A terminal keeps these for its own scrollback, and a shell has nothing bound
 to them: sent on, readline prints the tail of the sequence, `5~`, at the
@@ -584,9 +586,8 @@ function page_keys!(f::IFrame, bytes::Vector{UInt8})
     out = UInt8[]
     i = 1
     while i <= length(bytes)
-        if i + 5 <= length(bytes) && bytes[i] == 0x1b && bytes[i+1] == UInt8('[') &&
-           bytes[i+2] in (UInt8('5'), UInt8('6')) && bytes[i+3] == UInt8(';') &&
-           bytes[i+4] in (UInt8('2'), UInt8('5'), UInt8('6')) && bytes[i+5] == UInt8('~')
+        n = modified_page(bytes, i)
+        if n > 0
             up = bytes[i+2] == UInt8('5')
             page = max(1, last(f.sized) - 1)
             if f.copy !== nothing
@@ -595,13 +596,27 @@ function page_keys!(f::IFrame, bytes::Vector{UInt8})
                 f.scroll = clamp(f.scroll + (up ? page : -page), 0, f.history)
             end
             moved = true
-            i += 6
+            i += n
         else
             push!(out, bytes[i])
             i += 1
         end
     end
     (out, moved)
+end
+
+# The length of the modified page key at `bytes[i]`, `ESC [ 5|6 ; m ~` with
+# xterm's modifier `m` anything from 2 (Shift) to 16, or 0 where there is none.
+function modified_page(bytes::Vector{UInt8}, i::Int)
+    n = length(bytes)
+    (i + 5 <= n && bytes[i] == 0x1b && bytes[i+1] == UInt8('[') &&
+     bytes[i+2] in (UInt8('5'), UInt8('6')) && bytes[i+3] == UInt8(';')) || return 0
+    j, m = i + 4, 0
+    while j <= n && j <= i + 5 && UInt8('0') <= bytes[j] <= UInt8('9')
+        m = 10m + Int(bytes[j] - UInt8('0'))
+        j += 1
+    end
+    j <= n && bytes[j] == UInt8('~') && 2 <= m <= 16 ? j - i + 1 : 0
 end
 
 """
